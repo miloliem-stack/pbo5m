@@ -1,0 +1,1 @@
+{"ts": "2026-04-16T18:25:49.089164+00:00", "record_type": "warning", "source": "polymarket_rtds", "symbol": "BTC/USD", "warning": "missing_poly_rtds_url", "raw_payload_fragment": {"env": "POLY_RTDS_URL"}}

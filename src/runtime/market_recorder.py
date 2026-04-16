@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from ..binance_price_feed import BinancePriceFeed
+from ..jsonl_writer import JsonlWriter
+from ..market_quotes import build_market_quote_row, get_quote_snapshot
+from ..market_router_5m import route_btc_5m_market
+from ..polymarket_rtds_client import PolymarketRTDSClient
+from ..time_utils import isoformat_utc, parse_datetime, seconds_since, utc_now
+
+
+@dataclass
+class RecorderState:
+    active_market: Optional[dict] = None
+    last_chainlink_ts: Optional[str] = None
+    last_binance_ts: Optional[str] = None
+    last_quote_ts: Optional[str] = None
+    last_router_ts: Optional[str] = None
+    last_quote_error: Optional[str] = None
+    quote_source: str = "poll"
+
+
+class MarketRecorderRuntime:
+    def __init__(
+        self,
+        *,
+        output_dir: str | Path = "artifacts/market_recorder",
+        router_poll_seconds: float = 10.0,
+        quote_poll_seconds: float = 2.0,
+        heartbeat_seconds: float = 5.0,
+        console_log_seconds: float = 5.0,
+    ) -> None:
+        self.output_dir = Path(output_dir)
+        self.router_poll_seconds = max(1.0, float(router_poll_seconds))
+        self.quote_poll_seconds = max(0.5, float(quote_poll_seconds))
+        self.heartbeat_seconds = max(1.0, float(heartbeat_seconds))
+        self.console_log_seconds = max(1.0, float(console_log_seconds))
+        self.state = RecorderState()
+        self.stop_event = asyncio.Event()
+        self.chainlink_queue: asyncio.Queue[dict] = asyncio.Queue()
+        self.binance_queue: asyncio.Queue[dict] = asyncio.Queue()
+        self.rtds = PolymarketRTDSClient()
+        self.binance = BinancePriceFeed()
+        self._writers: dict[str, JsonlWriter] = {}
+
+    def run(self, *, duration_seconds: Optional[float] = None) -> dict[str, str]:
+        return asyncio.run(self._run(duration_seconds=duration_seconds))
+
+    async def _run(self, *, duration_seconds: Optional[float]) -> dict[str, str]:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._writers = {
+            "chainlink": JsonlWriter(self.output_dir / "chainlink_prices.jsonl"),
+            "binance": JsonlWriter(self.output_dir / "binance_prices.jsonl"),
+            "quotes": JsonlWriter(self.output_dir / "market_quotes.jsonl"),
+            "meta": JsonlWriter(self.output_dir / "market_meta.jsonl"),
+            "heartbeat": JsonlWriter(self.output_dir / "recorder_heartbeat.jsonl"),
+        }
+        tasks = [
+            asyncio.create_task(self.rtds.run(self.chainlink_queue, self.stop_event)),
+            asyncio.create_task(self.binance.run(self.binance_queue, self.stop_event)),
+            asyncio.create_task(self._router_loop()),
+            asyncio.create_task(self._quote_loop()),
+            asyncio.create_task(self._queue_drain_loop()),
+            asyncio.create_task(self._heartbeat_loop()),
+            asyncio.create_task(self._console_loop()),
+        ]
+        if duration_seconds is not None:
+            tasks.append(asyncio.create_task(self._deadline(duration_seconds)))
+        try:
+            await asyncio.gather(*tasks)
+        finally:
+            self.stop_event.set()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            for writer in self._writers.values():
+                writer.close()
+        return {
+            "output_dir": str(self.output_dir),
+            "chainlink_path": str(self.output_dir / "chainlink_prices.jsonl"),
+            "binance_path": str(self.output_dir / "binance_prices.jsonl"),
+            "quotes_path": str(self.output_dir / "market_quotes.jsonl"),
+            "meta_path": str(self.output_dir / "market_meta.jsonl"),
+            "heartbeat_path": str(self.output_dir / "recorder_heartbeat.jsonl"),
+        }
+
+    async def _deadline(self, duration_seconds: float) -> None:
+        await asyncio.sleep(max(0.0, float(duration_seconds)))
+        self.stop_event.set()
+
+    async def _router_loop(self) -> None:
+        last_market_key = None
+        while not self.stop_event.is_set():
+            routed = await asyncio.to_thread(route_btc_5m_market)
+            self.state.last_router_ts = isoformat_utc(utc_now())
+            market = routed.get("market")
+            market_key = (
+                market.get("market_id"),
+                market.get("start_time"),
+                market.get("end_time"),
+            ) if market else None
+            market_changed = market != self.state.active_market or market_key != last_market_key
+            self.state.active_market = market
+            last_market_key = market_key
+            self._writers["meta"].write(
+                {
+                    "ts": isoformat_utc(utc_now()),
+                    "record_type": "market_route",
+                    "market_changed": market_changed,
+                    "market": market,
+                    "routing_reason": routed.get("routing_reason"),
+                    "detection_source": routed.get("detection_source"),
+                    "diagnostics": routed.get("diagnostics"),
+                }
+            )
+            await asyncio.sleep(self.router_poll_seconds)
+
+    async def _quote_loop(self) -> None:
+        while not self.stop_event.is_set():
+            market = self.state.active_market
+            if not market or not market.get("token_yes") or not market.get("token_no"):
+                self._writers["quotes"].write(
+                    {
+                        "ts": isoformat_utc(utc_now()),
+                        "record_type": "warning",
+                        "warning": "no_active_market_for_quote_poll",
+                        "market": market,
+                    }
+                )
+                await asyncio.sleep(self.quote_poll_seconds)
+                continue
+            try:
+                yes_quote, no_quote = await asyncio.gather(
+                    asyncio.to_thread(get_quote_snapshot, market["token_yes"], force_refresh=True),
+                    asyncio.to_thread(get_quote_snapshot, market["token_no"], force_refresh=True),
+                )
+                self.state.last_quote_ts = isoformat_utc(utc_now())
+                self.state.last_quote_error = None
+                self._writers["quotes"].write(
+                    build_market_quote_row(
+                        market,
+                        yes_quote,
+                        no_quote,
+                        source="clob_poll",
+                        raw_payload_fragment={
+                            "yes_raw": yes_quote.get("raw"),
+                            "no_raw": no_quote.get("raw"),
+                        },
+                    )
+                )
+            except Exception as exc:
+                self.state.last_quote_error = str(exc)
+                self._writers["quotes"].write(
+                    {
+                        "ts": isoformat_utc(utc_now()),
+                        "record_type": "warning",
+                        "warning": "quote_poll_failed",
+                        "market": market,
+                        "error": str(exc),
+                    }
+                )
+            await asyncio.sleep(self.quote_poll_seconds)
+
+    async def _queue_drain_loop(self) -> None:
+        while not self.stop_event.is_set():
+            drained = False
+            try:
+                chainlink_row = self.chainlink_queue.get_nowait()
+                drained = True
+                self.state.last_chainlink_ts = chainlink_row.get("ts")
+                self._writers["chainlink"].write(chainlink_row)
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                binance_row = self.binance_queue.get_nowait()
+                drained = True
+                self.state.last_binance_ts = binance_row.get("ts")
+                self._writers["binance"].write(binance_row)
+            except asyncio.QueueEmpty:
+                pass
+            if not drained:
+                await asyncio.sleep(0.1)
+
+    async def _heartbeat_loop(self) -> None:
+        while not self.stop_event.is_set():
+            market = self.state.active_market or {}
+            self._writers["heartbeat"].write(
+                {
+                    "ts": isoformat_utc(utc_now()),
+                    "record_type": "heartbeat",
+                    "output_dir": str(self.output_dir),
+                    "active_market": {
+                        "market_id": market.get("market_id"),
+                        "slug": market.get("slug"),
+                        "title": market.get("title"),
+                        "status": market.get("status"),
+                        "market_start_time": market.get("start_time"),
+                        "market_end_time": market.get("end_time"),
+                    },
+                    "freshness_seconds": {
+                        "router": seconds_since(self.state.last_router_ts),
+                        "chainlink": seconds_since(self.state.last_chainlink_ts),
+                        "binance": seconds_since(self.state.last_binance_ts),
+                        "quotes": seconds_since(self.state.last_quote_ts),
+                    },
+                    "transport_state": {
+                        "chainlink_connected": self.rtds.connected,
+                        "chainlink_last_error": self.rtds.last_error,
+                        "binance_connected": self.binance.connected,
+                        "binance_rest_fallback": self.binance.using_rest_fallback,
+                        "binance_last_error": self.binance.last_error,
+                        "quote_last_error": self.state.last_quote_error,
+                    },
+                }
+            )
+            await asyncio.sleep(self.heartbeat_seconds)
+
+    async def _console_loop(self) -> None:
+        while not self.stop_event.is_set():
+            market = self.state.active_market or {}
+            print(
+                (
+                    f"[recorder] market={market.get('market_id') or 'none'} "
+                    f"slug={market.get('slug') or 'n/a'} "
+                    f"tick_freshness(chainlink={_fmt_age(self.state.last_chainlink_ts)}, "
+                    f"binance={_fmt_age(self.state.last_binance_ts)}) "
+                    f"quote_freshness={_fmt_age(self.state.last_quote_ts)} "
+                    f"fallback(chainlink_error={self.rtds.last_error or 'none'}, "
+                    f"binance_rest={self.binance.using_rest_fallback}, "
+                    f"quote_error={self.state.last_quote_error or 'none'}) "
+                    f"output_dir={self.output_dir}"
+                ),
+                flush=True,
+            )
+            await asyncio.sleep(self.console_log_seconds)
+
+
+def _fmt_age(value: Optional[str]) -> str:
+    age = seconds_since(value)
+    if age is None:
+        return "n/a"
+    return f"{age:.1f}s"

@@ -1,0 +1,2 @@
+{"ts": "2026-04-16T18:25:49.089241+00:00", "record_type": "warning", "source": "binance_rest", "symbol": "BTCUSDT", "warning": "websockets_dependency_unavailable", "raw_payload_fragment": {"url": "https://api.binance.com/api/v3/ticker/price"}}
+{"ts": "2026-04-16T18:25:49.117667+00:00", "record_type": "warning", "source": "binance_rest", "symbol": "BTCUSDT", "warning": "rest_poll_failed", "error": "<urlopen error [Errno 8] nodename nor servname provided, or not known>", "raw_payload_fragment": {"url": "https://api.binance.com/api/v3/ticker/price"}}
