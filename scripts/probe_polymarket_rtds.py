@@ -39,7 +39,8 @@ def parse_args() -> argparse.Namespace:
         epilog=(
             "Typical flow: set POLY_RTDS_URL plus any optional POLY_RTDS_HEADERS_JSON or "
             "POLY_RTDS_SUBSCRIBE_PAYLOADS, then run this probe first to confirm connect, "
-            "subscribe, pong, and inbound-frame behavior."
+            "subscribe, pong, and inbound-frame behavior. Default subscribe payload targets "
+            "the Polymarket browser-observed Chainlink BTC/USD stream."
         ),
     )
     parser.add_argument("--url", default=POLY_RTDS_URL or "")
