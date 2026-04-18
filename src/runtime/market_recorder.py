@@ -93,19 +93,15 @@ class MarketRecorderRuntime:
         self.stop_event.set()
 
     async def _router_loop(self) -> None:
-        last_market_key = None
+        last_market_identity = None
         while not self.stop_event.is_set():
             routed = await asyncio.to_thread(route_btc_5m_market)
             self.state.last_router_ts = isoformat_utc(utc_now())
             market = routed.get("market")
-            market_key = (
-                market.get("market_id"),
-                market.get("start_time"),
-                market.get("end_time"),
-            ) if market else None
-            market_changed = market != self.state.active_market or market_key != last_market_key
+            market_identity = _market_identity(market)
+            market_changed = market_identity != last_market_identity
             self.state.active_market = market
-            last_market_key = market_key
+            last_market_identity = market_identity
             self._writers["meta"].write(
                 {
                     "ts": isoformat_utc(utc_now()),
@@ -139,19 +135,29 @@ class MarketRecorderRuntime:
                     asyncio.to_thread(get_quote_snapshot, market["token_no"], force_refresh=True),
                 )
                 self.state.last_quote_ts = isoformat_utc(utc_now())
-                self.state.last_quote_error = None
-                self._writers["quotes"].write(
-                    build_market_quote_row(
-                        market,
-                        yes_quote,
-                        no_quote,
-                        source="clob_poll",
-                        raw_payload_fragment={
-                            "yes_raw": yes_quote.get("raw"),
-                            "no_raw": no_quote.get("raw"),
-                        },
-                    )
+                row = build_market_quote_row(
+                    market,
+                    yes_quote,
+                    no_quote,
+                    source="clob_poll",
+                    raw_payload_fragment={
+                        "yes_raw": yes_quote.get("raw"),
+                        "no_raw": no_quote.get("raw"),
+                    },
                 )
+                if row["quote_capture_status"] == "failed":
+                    self.state.last_quote_error = (
+                        f"yes={yes_quote.get('error_kind') or yes_quote.get('error') or 'unknown'}; "
+                        f"no={no_quote.get('error_kind') or no_quote.get('error') or 'unknown'}"
+                    )
+                elif row["quote_capture_status"] == "partial_failure":
+                    self.state.last_quote_error = (
+                        f"partial_quote_failure yes={yes_quote.get('error_kind') or 'ok'} "
+                        f"no={no_quote.get('error_kind') or 'ok'}"
+                    )
+                else:
+                    self.state.last_quote_error = None
+                self._writers["quotes"].write(row)
             except Exception as exc:
                 self.state.last_quote_error = str(exc)
                 self._writers["quotes"].write(
@@ -244,3 +250,17 @@ def _fmt_age(value: Optional[str]) -> str:
     if age is None:
         return "n/a"
     return f"{age:.1f}s"
+
+
+def _market_identity(market: Optional[dict]) -> Optional[tuple[Optional[str], ...]]:
+    if not market:
+        return None
+    return (
+        market.get("market_id"),
+        market.get("slug"),
+        market.get("condition_id"),
+        market.get("token_yes"),
+        market.get("token_no"),
+        market.get("start_time"),
+        market.get("end_time"),
+    )

@@ -7,6 +7,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from typing import Any, Optional
 
+import requests
+
 
 POLY_GAMMA_BASE = os.getenv("POLY_GAMMA_BASE", "https://gamma-api.polymarket.com").rstrip("/")
 POLY_CLOB_BASE = os.getenv("POLY_CLOB_BASE", "https://clob.polymarket.com").rstrip("/")
@@ -22,6 +24,13 @@ DEFAULT_GAMMA_HEADERS = {
         "Chrome/135.0.0.0 Safari/537.36"
     ),
 }
+DEFAULT_CLOB_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Origin": "https://polymarket.com",
+    "Referer": "https://polymarket.com/",
+    "User-Agent": DEFAULT_GAMMA_HEADERS["User-Agent"],
+}
+_CLOB_SESSION: Optional[requests.Session] = None
 
 
 def _gamma_headers() -> dict[str, str]:
@@ -35,6 +44,28 @@ def _gamma_headers() -> dict[str, str]:
         if isinstance(parsed, dict):
             headers.update({str(key): str(value) for key, value in parsed.items()})
     return headers
+
+
+def _clob_headers() -> dict[str, str]:
+    headers = dict(DEFAULT_CLOB_HEADERS)
+    raw = os.getenv("POLY_CLOB_HEADERS_JSON", "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            headers.update({str(key): str(value) for key, value in parsed.items()})
+    return headers
+
+
+def _clob_session() -> requests.Session:
+    global _CLOB_SESSION
+    if _CLOB_SESSION is None:
+        session = requests.Session()
+        session.headers.update(_clob_headers())
+        _CLOB_SESSION = session
+    return _CLOB_SESSION
 
 
 def request_json(base_url: str, path: str, *, params: Optional[dict[str, Any]] = None, timeout: Optional[float] = None) -> Any:
@@ -135,7 +166,90 @@ def gamma_get_diagnostic(path: str, *, params: Optional[dict[str, Any]] = None, 
 
 
 def clob_get(path: str, *, params: Optional[dict[str, Any]] = None, timeout: Optional[float] = None) -> Any:
-    return request_json(POLY_CLOB_BASE, path, params=params, timeout=timeout)
+    diagnostic = clob_get_diagnostic(path, params=params, timeout=timeout)
+    if diagnostic.get("ok"):
+        return diagnostic.get("payload")
+    raise RuntimeError(
+        f"clob_get failed error_kind={diagnostic.get('error_kind')} "
+        f"http_status={diagnostic.get('http_status')} error={diagnostic.get('error')}"
+    )
+
+
+def clob_get_diagnostic(
+    path: str,
+    *,
+    params: Optional[dict[str, Any]] = None,
+    timeout: Optional[float] = None,
+) -> dict[str, Any]:
+    url = f"{POLY_CLOB_BASE}{path}"
+    headers = _clob_headers()
+    try:
+        response = _clob_session().get(
+            url,
+            params=params,
+            timeout=timeout or REQUEST_TIMEOUT_SEC,
+            headers=headers,
+        )
+    except requests.RequestException as exc:
+        response = getattr(exc, "response", None)
+        body = ""
+        if response is not None:
+            try:
+                body = response.text[:500]
+            except Exception:
+                body = ""
+        return {
+            "ok": False,
+            "url": url,
+            "path": path,
+            "params": params,
+            "http_status": getattr(response, "status_code", None),
+            "headers_applied": headers,
+            "transport": "requests_session",
+            "error_kind": "transport_failure",
+            "error": str(exc),
+            "response_text_sample": body,
+        }
+
+    if response.status_code != 200:
+        return {
+            "ok": False,
+            "url": response.url,
+            "path": path,
+            "params": params,
+            "http_status": response.status_code,
+            "headers_applied": headers,
+            "transport": "requests_session",
+            "error_kind": "http_failure",
+            "error": f"HTTP {response.status_code}",
+            "response_text_sample": response.text[:500],
+        }
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "url": response.url,
+            "path": path,
+            "params": params,
+            "http_status": response.status_code,
+            "headers_applied": headers,
+            "transport": "requests_session",
+            "error_kind": "parse_failure",
+            "error": str(exc),
+            "response_text_sample": response.text[:500],
+        }
+    return {
+        "ok": True,
+        "url": response.url,
+        "path": path,
+        "params": params,
+        "http_status": response.status_code,
+        "headers_applied": headers,
+        "transport": "requests_session",
+        "payload": payload,
+    }
 
 
 def coerce_json_list(value: Any) -> Optional[list[Any]]:

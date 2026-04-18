@@ -4,7 +4,7 @@ import os
 import time
 from typing import Any, Optional
 
-from .polymarket_api import clob_get
+from .polymarket_api import clob_get_diagnostic
 from .time_utils import isoformat_utc, seconds_since, utc_now
 
 
@@ -34,33 +34,19 @@ def _extract_orderbook_payload(raw: Any) -> Any:
     return raw
 
 
-def _extract_numeric(raw: Any, *keys: str) -> Optional[float]:
-    if raw is None:
-        return None
-    if isinstance(raw, (int, float)):
-        return float(raw)
-    if isinstance(raw, str):
-        try:
-            return float(raw)
-        except Exception:
-            return None
-    if isinstance(raw, dict):
-        for key in keys:
-            value = raw.get(key)
-            if value is not None:
-                parsed = _extract_numeric(value)
-                if parsed is not None:
-                    return parsed
-        for key in ("data", "result", "price", "spread", "value"):
-            value = raw.get(key)
-            if value is not None:
-                parsed = _extract_numeric(value, *keys)
-                if parsed is not None:
-                    return parsed
-    return None
-
-
-def _build_quote_snapshot_from_book(token_id: str, raw: Any, *, source: str, fetched_at_epoch: float, error: Optional[str] = None) -> dict[str, Any]:
+def _build_quote_snapshot_from_book(
+    token_id: str,
+    raw: Any,
+    *,
+    source: str,
+    fetched_at_epoch: float,
+    fetch_ok: bool,
+    error: Optional[str] = None,
+    error_kind: Optional[str] = None,
+    http_status: Optional[int] = None,
+    transport: Optional[str] = None,
+    response_text_sample: Optional[str] = None,
+) -> dict[str, Any]:
     best_bid = None
     best_ask = None
     bid_size = None
@@ -90,6 +76,10 @@ def _build_quote_snapshot_from_book(token_id: str, raw: Any, *, source: str, fet
             parse_error = str(exc)
     else:
         parse_error = "non-dict-orderbook"
+    final_error_kind = error_kind
+    final_error = error or parse_error
+    if parse_error and fetch_ok:
+        final_error_kind = final_error_kind or "parse_failure"
     return {
         "token_id": token_id,
         "best_bid": best_bid,
@@ -103,7 +93,12 @@ def _build_quote_snapshot_from_book(token_id: str, raw: Any, *, source: str, fet
         "source": source,
         "fetched_at": isoformat_utc(utc_now()),
         "age_seconds": max(0.0, time.time() - fetched_at_epoch),
-        "error": error or parse_error,
+        "fetch_ok": bool(fetch_ok and not is_empty and not parse_error),
+        "error_kind": final_error_kind,
+        "http_status": http_status,
+        "transport": transport,
+        "error": final_error,
+        "response_text_sample": response_text_sample,
         "raw": raw,
     }
 
@@ -116,66 +111,51 @@ def get_quote_snapshot(token_id: str, *, force_refresh: bool = False) -> dict[st
         snapshot["age_seconds"] = max(0.0, now_epoch - cached["fetched_at_epoch"])
         return snapshot
 
-    raw: dict[str, Any] = {}
-    errors: list[str] = []
-
-    for side, key in (("BUY", "buy_price"), ("SELL", "sell_price")):
-        try:
-            raw[key] = clob_get("/price", params={"token_id": token_id, "side": side})
-        except Exception as exc:
-            errors.append(f"{key}:{exc}")
-    try:
-        raw["spread"] = clob_get("/spread", params={"token_id": token_id})
-    except Exception as exc:
-        errors.append(f"spread:{exc}")
-    try:
-        raw["book"] = clob_get("/book", params={"token_id": token_id})
-    except Exception as exc:
-        errors.append(f"book:{exc}")
-
-    best_bid = _extract_numeric(raw.get("sell_price"), "price")
-    best_ask = _extract_numeric(raw.get("buy_price"), "price")
-    spread = _extract_numeric(raw.get("spread"), "spread")
-    book_snapshot = _build_quote_snapshot_from_book(token_id, raw.get("book"), source="clob_orderbook", fetched_at_epoch=now_epoch)
-    if best_bid is None:
-        best_bid = book_snapshot.get("best_bid")
-    if best_ask is None:
-        best_ask = book_snapshot.get("best_ask")
-    if spread is None and best_bid is not None and best_ask is not None:
-        spread = float(best_ask - best_bid)
-    mid = None
-    if best_bid is not None and best_ask is not None:
-        mid = float((best_ask + best_bid) / 2.0)
-    elif book_snapshot.get("mid") is not None:
-        mid = book_snapshot["mid"]
-
-    snapshot = {
-        "token_id": token_id,
-        "best_bid": best_bid,
-        "best_ask": best_ask,
-        "mid": mid,
-        "spread": spread,
-        "bid_size": book_snapshot.get("bid_size"),
-        "ask_size": book_snapshot.get("ask_size"),
-        "is_empty": best_bid is None and best_ask is None,
-        "is_crossed": bool(best_bid is not None and best_ask is not None and best_bid > best_ask),
-        "source": "clob_price_and_book",
-        "fetched_at": isoformat_utc(utc_now()),
-        "age_seconds": 0.0,
-        "fetch_failed": not bool(raw),
-        "error": "; ".join(errors) if errors else None,
-        "raw": raw,
-        "quote_age_seconds": seconds_since(isoformat_utc(utc_now())),
+    book_result = clob_get_diagnostic("/book", params={"token_id": token_id})
+    snapshot = _build_quote_snapshot_from_book(
+        token_id,
+        book_result.get("payload"),
+        source="clob_orderbook",
+        fetched_at_epoch=now_epoch,
+        fetch_ok=bool(book_result.get("ok")),
+        error=book_result.get("error"),
+        error_kind=book_result.get("error_kind"),
+        http_status=book_result.get("http_status"),
+        transport=book_result.get("transport"),
+        response_text_sample=book_result.get("response_text_sample"),
+    )
+    snapshot["fetch_failed"] = not snapshot["fetch_ok"]
+    snapshot["raw"] = {
+        "book": book_result.get("payload"),
+        "book_diagnostic": {
+            "ok": book_result.get("ok"),
+            "http_status": book_result.get("http_status"),
+            "error_kind": book_result.get("error_kind"),
+            "error": book_result.get("error"),
+            "transport": book_result.get("transport"),
+            "response_text_sample": book_result.get("response_text_sample"),
+        },
     }
+    snapshot["quote_age_seconds"] = seconds_since(snapshot["fetched_at"])
     _QUOTE_CACHE[token_id] = {"snapshot": snapshot, "fetched_at_epoch": now_epoch}
     return dict(snapshot)
 
 
 def build_market_quote_row(market: dict[str, Any], yes_quote: dict[str, Any], no_quote: dict[str, Any], *, source: str, raw_payload_fragment: Any) -> dict[str, Any]:
+    yes_ok = bool(yes_quote.get("fetch_ok"))
+    no_ok = bool(no_quote.get("fetch_ok"))
+    if yes_ok and no_ok:
+        capture_status = "ok"
+    elif yes_ok or no_ok:
+        capture_status = "partial_failure"
+    else:
+        capture_status = "failed"
     return {
         "ts": isoformat_utc(utc_now()),
         "record_type": "quote_snapshot",
         "source": source,
+        "quote_capture_ok": yes_ok or no_ok,
+        "quote_capture_status": capture_status,
         "market_id": market.get("market_id"),
         "slug": market.get("slug"),
         "title": market.get("title"),
@@ -186,6 +166,10 @@ def build_market_quote_row(market: dict[str, Any], yes_quote: dict[str, Any], no
         "market_end_time": market.get("end_time"),
         "status": market.get("status"),
         "yes": {
+            "fetch_ok": yes_quote.get("fetch_ok"),
+            "error_kind": yes_quote.get("error_kind"),
+            "http_status": yes_quote.get("http_status"),
+            "transport": yes_quote.get("transport"),
             "best_bid": yes_quote.get("best_bid"),
             "best_ask": yes_quote.get("best_ask"),
             "mid": yes_quote.get("mid"),
@@ -194,6 +178,10 @@ def build_market_quote_row(market: dict[str, Any], yes_quote: dict[str, Any], no
             "error": yes_quote.get("error"),
         },
         "no": {
+            "fetch_ok": no_quote.get("fetch_ok"),
+            "error_kind": no_quote.get("error_kind"),
+            "http_status": no_quote.get("http_status"),
+            "transport": no_quote.get("transport"),
             "best_bid": no_quote.get("best_bid"),
             "best_ask": no_quote.get("best_ask"),
             "mid": no_quote.get("mid"),
