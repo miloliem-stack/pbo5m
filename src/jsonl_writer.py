@@ -27,5 +27,8 @@ class JsonlWriter:
         self._handle.write(json.dumps(row, default=_json_default, sort_keys=False) + "\n")
         self._handle.flush()
 
+    def flush(self) -> None:
+        self._handle.flush()
+
     def close(self) -> None:
         self._handle.close()
