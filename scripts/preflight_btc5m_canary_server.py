@@ -14,6 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.runtime.env_file import load_default_env_file
+
+load_default_env_file()
+
 from src.binance_price_feed import rest_binance_price_row
 from src.market_quotes import get_quote_snapshot
 from src.market_router_5m import route_btc_5m_market

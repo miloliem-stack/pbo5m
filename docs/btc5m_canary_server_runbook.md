@@ -8,6 +8,8 @@ Warning: live mode can place real Polymarket CLOB buy orders. Use an isolated wa
 
 ## Required Environment
 
+The canary server scripts auto-load `.env` from the repo root. Existing shell environment variables take precedence. To use a different file, set `BTC5M_ENV_FILE=/path/to/file.env` before launching the script.
+
 - `BTC5M_POLICY_ID=state3_ask_brownian_age60_v0`
 - `BTC5M_EXECUTION_MODE=observe|live`
 - `BTC5M_LIVE_TRADING_ENABLED=false` by default

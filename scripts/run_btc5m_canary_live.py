@@ -14,6 +14,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.runtime.env_file import load_default_env_file
+
+load_default_env_file()
+
 from src.runtime.btc5m_canary_execution import (
     CanaryExecutor,
     ExecutionConfig,

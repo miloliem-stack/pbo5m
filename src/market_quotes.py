@@ -34,6 +34,21 @@ def _extract_orderbook_payload(raw: Any) -> Any:
     return raw
 
 
+def _valid_book_levels(levels: Any) -> list[tuple[float, float]]:
+    if not isinstance(levels, list):
+        return []
+    parsed: list[tuple[float, float]] = []
+    for level in levels:
+        parsed_level = _parse_book_level(level)
+        if parsed_level is None:
+            continue
+        price, size = parsed_level
+        if size <= 0:
+            continue
+        parsed.append((price, size))
+    return parsed
+
+
 def _build_quote_snapshot_from_book(
     token_id: str,
     raw: Any,
@@ -59,10 +74,10 @@ def _build_quote_snapshot_from_book(
     book = _extract_orderbook_payload(raw)
     if isinstance(book, dict):
         try:
-            bids = book.get("bids") or []
-            asks = book.get("asks") or []
-            bid_level = _parse_book_level(bids[0]) if bids else None
-            ask_level = _parse_book_level(asks[0]) if asks else None
+            bids = _valid_book_levels(book.get("bids") or [])
+            asks = _valid_book_levels(book.get("asks") or [])
+            bid_level = max(bids, key=lambda level: level[0]) if bids else None
+            ask_level = min(asks, key=lambda level: level[0]) if asks else None
             if bid_level is not None:
                 best_bid, bid_size = bid_level
             if ask_level is not None:
