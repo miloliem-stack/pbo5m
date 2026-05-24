@@ -121,3 +121,33 @@ def test_roi_pnl_metrics_are_correct():
     assert row["gross_cost"] == pytest.approx(1.0)
     assert row["pnl"] == pytest.approx(1.0 / 0.40 - 1.0)
     assert row["roi"] == pytest.approx((1.0 / 0.40 - 1.0) / 1.0)
+
+
+def test_models_override_avoids_stress_manifest_models(tmp_path):
+    manifest_root = tmp_path / "stress"
+    manifest_root.mkdir()
+    (manifest_root / "run_manifest.json").write_text('{"requested_models":["baseline_50"]}', encoding="utf-8")
+    parsed = age.build_parser().parse_args(
+        [
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--stress-artifact-root",
+            str(manifest_root),
+            "--models",
+            "brownian_zero_drift__rv30",
+        ]
+    )
+    models, _, _ = age.load_models_stakes_thresholds(parsed)
+    assert models == ["brownian_zero_drift__rv30"]
+
+
+def test_base_only_policy_spec_skips_hmm_policy_needs():
+    selected = age.select_first_entries(
+        candidate_frame(),
+        [{"policy_name": "base_all_models_original_like", "kind": "base", "pmax": None}],
+        age.parse_windows("60:240"),
+        [0.02],
+    )
+    trades = age.simulate_policy(selected, [5.0])
+    assert set(trades["policy_name"]) == {"base_all_models_original_like"}
+    assert trades["hmm_model_id"].eq("").all()

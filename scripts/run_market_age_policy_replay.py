@@ -301,6 +301,9 @@ def frozen_validation(summary_source: pd.DataFrame, min_trades: int, min_markets
 
 
 def load_models_stakes_thresholds(args: argparse.Namespace) -> tuple[list[str], list[float], list[float]]:
+    if args.models:
+        models = parse_csv(args.models)
+        return models, stress.parse_floats(args.stake_sizes), stress.parse_floats(args.edge_thresholds)
     manifest_path = Path(args.stress_artifact_root) / "run_manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -346,13 +349,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     snapshots = stress.prepare_quote_snapshots(ticks, windows, valid_topbook_only=True)
     preds, resolution, missing = stress.load_predictions(args.predictions_root, models, windows)
     if missing:
-        raise RuntimeError(f"missing requested prediction models: {missing}")
+        detail = resolution.get("error") if isinstance(resolution, dict) else None
+        suffix = f"; {detail}" if detail else ""
+        raise RuntimeError(f"missing requested prediction models: {missing}{suffix}")
     predicted = stress.attach_predictions(snapshots, preds, models)
     candidate_base = add_edge_columns(predicted)
     hmm_context = args.hmm_context_path if args.hmm_context_path and args.hmm_context_path.exists() else Path(args.hmm_attribution_root) / "trade_level_with_hmm.parquet"
-    state_rows = state_rows_from_context(hmm_context, [FOCUS_HMM_MODEL, BAD_HMM_MODEL])
-    candidate_base = attach_hmm_context(candidate_base, state_rows, [FOCUS_HMM_MODEL, BAD_HMM_MODEL])
-    policies = policy_specs(stress.parse_floats(args.pmax_thresholds), args.include_bad_state_veto)
+    if args.base_only:
+        policies = [{"policy_name": "base_all_models_original_like", "kind": "base", "pmax": None}]
+    else:
+        state_rows = state_rows_from_context(hmm_context, [FOCUS_HMM_MODEL, BAD_HMM_MODEL])
+        candidate_base = attach_hmm_context(candidate_base, state_rows, [FOCUS_HMM_MODEL, BAD_HMM_MODEL])
+        policies = policy_specs(stress.parse_floats(args.pmax_thresholds), args.include_bad_state_veto)
     selected = select_first_entries(candidate_base, policies, windows_spec, thresholds)
     trades = simulate_policy(selected, stakes, top_n=3, capacity_aware=True)
     hmm_veto.write_frame(trades, output_dir / "trade_level_policy_results.parquet")
@@ -403,6 +411,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "hmm_context_path": str(hmm_context),
         "stress_artifact_root": str(args.stress_artifact_root),
         "models": models,
+        "base_only": bool(args.base_only),
         "stakes": stakes,
         "edge_thresholds": thresholds,
         "entry_age_windows": args.entry_age_windows,
@@ -431,6 +440,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hmm-attribution-root", type=Path, default=DEFAULT_HMM_ATTR_ROOT)
     parser.add_argument("--stress-artifact-root", type=Path, default=DEFAULT_STRESS_ROOT)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--models", default="", help="Optional comma-separated model list. Defaults to the stress manifest model set.")
+    parser.add_argument("--base-only", action="store_true", help="Emit only base_all_models_original_like rows and skip HMM context attachment.")
     parser.add_argument("--entry-age-windows", default=DEFAULT_WINDOWS)
     parser.add_argument("--stake-sizes", default=",".join(f"{x:g}" for x in stress.DEFAULT_STAKES))
     parser.add_argument("--edge-thresholds", default=",".join(f"{x:g}" for x in stress.DEFAULT_THRESHOLDS))

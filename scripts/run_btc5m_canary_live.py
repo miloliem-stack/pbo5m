@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,7 +26,10 @@ from src.runtime.btc5m_canary_execution import (
     add_decision_provenance,
 )
 from src.runtime.btc5m_canary_policy import evaluate_canary_policy
+from src.runtime.btc5m_brownian_conservative import STRATEGY_ID as BROWNIAN_STRATEGY_ID
+from src.runtime.btc5m_brownian_conservative import BrownianConservativeConfig
 from src.runtime.btc5m_live_input_builder import BTC5MCanaryLiveInputBuilder, LiveInputBuilderConfig
+from src.runtime.btc5m_strategy_router import execute_brownian_request_with_canary_route, run_btc5m_strategy_cycle, selected_strategy_id
 from src.time_utils import utc_now
 from scripts.run_btc5m_live_state_producer import load_json as load_state_json
 
@@ -98,6 +101,10 @@ class LiveStateLogger:
 
 
 def run(args: argparse.Namespace) -> dict:
+    strategy_id = selected_strategy_id()
+    if strategy_id == BROWNIAN_STRATEGY_ID:
+        return run_brownian_strategy(args)
+
     config = ExecutionConfig.from_env()
     adapter = PyClobClientAdapter() if config.execution_mode == "live" else None
     journal = ExecutionJournal(config.journal_root)
@@ -156,6 +163,76 @@ def run(args: argparse.Namespace) -> dict:
             break
         time.sleep(float(args.poll_interval_sec))
     return result
+
+
+def run_brownian_strategy(args: argparse.Namespace) -> dict:
+    cfg = BrownianConservativeConfig.from_env()
+    if not args.build_live_input:
+        return {
+            "status": "observe_no_decision",
+            "strategy_id": BROWNIAN_STRATEGY_ID,
+            "note": "Brownian server mode requires --build-live-input so current quote, price, volatility, bankroll, and market-age gates are rebuilt.",
+        }
+    live_logger = LiveStateLogger(args.live_log_root)
+    builder = BTC5MCanaryLiveInputBuilder(LiveInputBuilderConfig.from_env())
+    executor = None
+    execution_callback = None
+    if not cfg.paper_only and cfg.live_enabled:
+        exec_config = brownian_execution_config_from_env()
+        adapter = PyClobClientAdapter() if exec_config.execution_mode == "live" else None
+        journal = ExecutionJournal(exec_config.journal_root)
+        journal.ensure_writable()
+        executor = CanaryExecutor(exec_config, adapter, journal)
+        execution_callback = lambda request: execute_brownian_request_with_canary_route(executor, request)
+    deadline = time.monotonic() + float(args.max_runtime_sec)
+    result: dict[str, Any] = {"status": "no_decision_before_timeout", "strategy_id": BROWNIAN_STRATEGY_ID}
+    while time.monotonic() <= deadline:
+        built = builder.build()
+        live_logger.write_live_input(built)
+        if not built.get("ok"):
+            result = {
+                "status": "live_input_missing",
+                "strategy_id": BROWNIAN_STRATEGY_ID,
+                "missing_input_reason": built.get("missing_input_reason"),
+                "missing_components": built.get("missing_components") or [],
+            }
+            time.sleep(float(args.poll_interval_sec))
+            continue
+        routed = run_btc5m_strategy_cycle(
+            strategy_id=BROWNIAN_STRATEGY_ID,
+            live_input=built["input"],
+            brownian_execution_callback=execution_callback,
+            brownian_config=cfg,
+        )
+        result = routed.result
+        live_logger.write_decision(result)
+        if result.get("status") in {"submitted_live", "execution_rejected", "execution_error", "paper_validated"}:
+            if cfg.paper_only or args.stop_after_first_eligible_decision:
+                break
+        time.sleep(float(args.poll_interval_sec))
+    return result
+
+
+def brownian_execution_config_from_env() -> ExecutionConfig:
+    env = os.environ
+    return ExecutionConfig(
+        execution_mode=env.get("BTC5M_EXECUTION_MODE", "observe").strip().lower(),
+        live_trading_enabled=str(env.get("BTC5M_BROWNIAN_LIVE_ENABLED", "false")).lower() in {"1", "true", "yes", "on"},
+        live_one_shot=str(env.get("BTC5M_LIVE_ONE_SHOT", "true")).lower() in {"1", "true", "yes", "on"},
+        max_order_attempts_per_process=int(env.get("BTC5M_MAX_ORDER_ATTEMPTS_PER_PROCESS", "1")),
+        canary_stake_usd=1.0,
+        max_notional_per_market_usd=None,
+        max_daily_notional_usd=None,
+        max_open_positions=int(env.get("BTC5M_MAX_OPEN_POSITIONS", "1")),
+        one_entry_per_market=True,
+        expected_wallet_address=env.get("BTC5M_EXPECTED_WALLET_ADDRESS"),
+        order_poll_timeout_sec=float(env.get("BTC5M_ORDER_POLL_TIMEOUT_SEC", "20")),
+        order_poll_interval_sec=float(env.get("BTC5M_ORDER_POLL_INTERVAL_SEC", "1")),
+        max_quote_age_ms=float(env.get("BTC5M_MAX_QUOTE_AGE_MS") or env.get("BTC5M_QUOTE_MAX_AGE_MS", "5000")),
+        max_price_slippage=float(env.get("BTC5M_BROWNIAN_ASK_SLIPPAGE_ABS", "0.01")),
+        max_limit_price=0.99,
+        journal_root=Path(env.get("BTC5M_EXECUTION_JOURNAL_ROOT", "artifacts/btc5m_canary_execution")),
+    )
 
 
 def live_builder_startup_errors(builder: BTC5MCanaryLiveInputBuilder) -> list[str]:

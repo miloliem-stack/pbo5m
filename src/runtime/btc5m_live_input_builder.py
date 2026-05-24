@@ -88,6 +88,7 @@ class BTC5MCanaryLiveInputBuilder:
             "market": {
                 "market_id": market.get("market_id"),
                 "condition_id": market.get("condition_id"),
+                "slug": market.get("slug"),
                 "token_yes": str(yes_token),
                 "token_no": str(no_token),
                 "yes_token_id": str(yes_token),
@@ -95,6 +96,9 @@ class BTC5MCanaryLiveInputBuilder:
                 "market_start_ts": isoformat_utc(start),
                 "market_end_ts": isoformat_utc(end),
                 "market_age_sec": (now - start).total_seconds(),
+                "market_age_seconds": (now - start).total_seconds(),
+                "tradable": market.get("tradable", market.get("active", True)),
+                "is_open": market.get("is_open", market.get("active", True)),
             },
             "quote": {
                 "valid_topbook": valid_topbook,
@@ -104,10 +108,17 @@ class BTC5MCanaryLiveInputBuilder:
                 "no_ask": no_quote.get("best_ask"),
                 "yes_depth": yes_quote.get("ask_size"),
                 "no_depth": no_quote.get("ask_size"),
+                "yes_asks": _ask_levels(yes_quote),
+                "no_asks": _ask_levels(no_quote),
+                "yes_top10_depth_cap": _topn_depth_cap(yes_quote, 10),
+                "no_top10_depth_cap": _topn_depth_cap(no_quote, 10),
+                "yes_token_id": str(yes_token),
+                "no_token_id": str(no_token),
             },
             "predictions": brownian.get("prediction"),
+            "price_state": brownian.get("price_state"),
             "hmm_state": hmm.get("hmm_state"),
-            "risk_state": {"open_positions": 0, "daily_loss_usd": 0.0},
+            "risk_state": _brownian_risk_state_from_env(),
             "decision_ts": isoformat_utc(now),
             "live_input_meta": {
                 "generated_ts": isoformat_utc(now),
@@ -155,6 +166,13 @@ class BTC5MCanaryLiveInputBuilder:
                     "model_version": state.get("model_version"),
                     "artifact_path": str(self.config.brownian_state_path),
                 },
+                "price_state": {
+                    "reference_price": _optional_float(state.get("reference_price")),
+                    "current_price": _optional_float(state.get("current_price")),
+                    "sigma": _optional_float(state.get("rv30") or state.get("sigma")),
+                    "rv30": _optional_float(state.get("rv30") or state.get("sigma")),
+                    "asof_ts": state.get("asof_ts") or state.get("generated_ts"),
+                },
             }
         price = self.binance_price_fn()
         current_price = price.get("price")
@@ -174,6 +192,13 @@ class BTC5MCanaryLiveInputBuilder:
                 "model_p_no": 1.0 - p_yes,
                 "probability_replay_convention": "model_p_yes",
                 "probability_formula": "brownian_zero_drift__rv30",
+            },
+            "price_state": {
+                "reference_price": float(reference_price),
+                "current_price": float(current_price),
+                "sigma": float(rv30),
+                "rv30": float(rv30),
+                "asof_ts": price.get("ts") or isoformat_utc(now),
             },
         }
 
@@ -233,3 +258,62 @@ def load_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"live input artifact must be a JSON object: {path}")
     return payload
+
+
+def _ask_levels(quote: dict[str, Any]) -> list[dict[str, float]]:
+    book = quote.get("raw", {}).get("book") if isinstance(quote.get("raw"), dict) else None
+    if isinstance(book, dict):
+        payload = book.get("book") or book.get("data") or book.get("orderbook") or book
+        levels = payload.get("asks") if isinstance(payload, dict) else None
+    else:
+        levels = None
+    parsed: list[dict[str, float]] = []
+    if isinstance(levels, list):
+        for level in levels:
+            if isinstance(level, dict):
+                px = _optional_float(level.get("price") or level.get("p"))
+                size = _optional_float(level.get("size") or level.get("quantity") or level.get("qty") or level.get("q"))
+            elif isinstance(level, (list, tuple)) and len(level) >= 2:
+                px = _optional_float(level[0])
+                size = _optional_float(level[1])
+            else:
+                px = None
+                size = None
+            if px is not None and size is not None and size > 0:
+                parsed.append({"price": px, "size": size})
+    if not parsed and quote.get("best_ask") is not None and quote.get("ask_size") is not None:
+        parsed.append({"price": float(quote["best_ask"]), "size": float(quote["ask_size"])})
+    return sorted(parsed, key=lambda row: row["price"])
+
+
+def _topn_depth_cap(quote: dict[str, Any], top_n: int) -> Optional[float]:
+    levels = _ask_levels(quote)
+    if not levels:
+        return None
+    return float(sum(level["price"] * level["size"] for level in levels[:top_n]))
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _brownian_risk_state_from_env() -> dict[str, Any]:
+    bankroll = _optional_float(os.getenv("BTC5M_BROWNIAN_BANKROLL_USD"))
+    session_start = _optional_float(os.getenv("BTC5M_BROWNIAN_SESSION_START_BANKROLL_USD")) or bankroll
+    day_start = _optional_float(os.getenv("BTC5M_BROWNIAN_DAY_START_BANKROLL_USD")) or bankroll
+    daily_pnl = _optional_float(os.getenv("BTC5M_BROWNIAN_DAILY_PNL_USD")) or 0.0
+    already = str(os.getenv("BTC5M_BROWNIAN_ALREADY_TRADED_MARKET", "false")).strip().lower() in {"1", "true", "yes", "on"}
+    return {
+        "open_positions": 0,
+        "daily_loss_usd": 0.0,
+        "bankroll": bankroll or 0.0,
+        "session_start_bankroll": session_start or bankroll or 0.0,
+        "day_start_bankroll": day_start or bankroll or 0.0,
+        "daily_pnl": daily_pnl,
+        "already_traded_market": already,
+    }

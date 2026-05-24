@@ -204,3 +204,40 @@ Set `BTC5M_EXPECTED_WALLET_ADDRESS`. In live mode the runner refuses startup whe
 - Final-minute live trading
 - Fallback probability models
 - Fallback HMM models
+
+## Frozen HMM Deploy Pipeline
+
+The old rolling-fold `state == 3` is not deployable by label. Fit and validate a frozen model first:
+
+```bash
+.venv/bin/python scripts/fit_export_btc5m_frozen_hmm.py \
+  --hmm-root artifacts/hmm_regime_health/phase1_core_laplace_2to8 \
+  --price-input data/binance/btcusdt_1m \
+  --output-dir models/btc5m/laplace_1m_gaussian_hmm_k4_frozen_v1 \
+  --train-rows 86400 \
+  --random-seed 42
+```
+
+Attach frozen states causally to replay rows:
+
+```bash
+.venv/bin/python scripts/attach_frozen_hmm_states_to_replay.py \
+  --bundle-dir models/btc5m/laplace_1m_gaussian_hmm_k4_frozen_v1 \
+  --replay-path artifacts/market_age_policy_replay/compact_20260423_20260511_state3_ask_age_v1/trade_level_policy_results.parquet \
+  --price-input data/binance/btcusdt_1m \
+  --run-id laplace_k4_frozen_v1
+```
+
+Evaluate train-selected states on holdout:
+
+```bash
+.venv/bin/python scripts/evaluate_frozen_hmm_state_policy.py \
+  --attached-path artifacts/frozen_hmm_state_attribution/laplace_k4_frozen_v1/trade_level_with_frozen_hmm.parquet \
+  --output-dir artifacts/frozen_hmm_state_attribution/laplace_k4_frozen_v1_eval \
+  --deploy-bundle-dir models/btc5m/laplace_1m_gaussian_hmm_k4_frozen_v1 \
+  --train-slices early \
+  --holdout-slices main,fresh \
+  --min-edge 0.02
+```
+
+Only use the frozen HMM in live mode after `deploy_policy.json` exists in the bundle and passes preflight. The live scorer refuses model id/hash mismatches.
