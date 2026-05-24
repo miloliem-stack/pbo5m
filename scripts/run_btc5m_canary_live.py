@@ -174,7 +174,15 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
             "note": "Brownian server mode requires --build-live-input so current quote, price, volatility, bankroll, and market-age gates are rebuilt.",
         }
     live_logger = LiveStateLogger(args.live_log_root)
-    builder = BTC5MCanaryLiveInputBuilder(LiveInputBuilderConfig.from_env())
+    builder_cfg = LiveInputBuilderConfig.from_env()
+    builder_cfg = LiveInputBuilderConfig(
+        hmm_state_path=builder_cfg.hmm_state_path,
+        brownian_state_path=builder_cfg.brownian_state_path,
+        max_quote_age_ms=builder_cfg.max_quote_age_ms,
+        max_state_age_sec=builder_cfg.max_state_age_sec,
+        require_hmm_state=False,
+    )
+    builder = BTC5MCanaryLiveInputBuilder(builder_cfg)
     executor = None
     execution_callback = None
     if not cfg.paper_only and cfg.live_enabled:

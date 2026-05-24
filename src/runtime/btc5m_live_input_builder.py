@@ -23,6 +23,7 @@ class LiveInputBuilderConfig:
     brownian_state_path: Optional[Path] = None
     max_quote_age_ms: float = 5000.0
     max_state_age_sec: float = 15.0
+    require_hmm_state: bool = True
 
     @classmethod
     def from_env(cls, env: Optional[dict[str, str]] = None) -> "LiveInputBuilderConfig":
@@ -34,6 +35,7 @@ class LiveInputBuilderConfig:
             brownian_state_path=Path(brownian_path) if brownian_path else None,
             max_quote_age_ms=float(source.get("BTC5M_MAX_QUOTE_AGE_MS") or source.get("BTC5M_QUOTE_MAX_AGE_MS", "5000")),
             max_state_age_sec=float(source.get("BTC5M_LIVE_STATE_MAX_AGE_SEC", "15")),
+            require_hmm_state=_env_bool(source.get("BTC5M_REQUIRE_HMM_STATE", "true")),
         )
 
 
@@ -81,7 +83,7 @@ class BTC5MCanaryLiveInputBuilder:
         if not brownian.get("ok"):
             missing.append("brownian_probability")
         hmm = self.load_hmm_state(now=now)
-        if not hmm.get("ok"):
+        if self.config.require_hmm_state and not hmm.get("ok"):
             missing.append("hmm_state")
 
         input_payload = {
@@ -300,6 +302,10 @@ def _optional_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _env_bool(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _brownian_risk_state_from_env() -> dict[str, Any]:

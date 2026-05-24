@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts import run_btc5m_canary_live as live_runner
 from src.runtime.btc5m_brownian_conservative import BrownianConservativeConfig
+from src.runtime.btc5m_live_input_builder import BTC5MCanaryLiveInputBuilder, LiveInputBuilderConfig
 from src.runtime.btc5m_strategy_router import run_btc5m_strategy_cycle
 
 
@@ -215,3 +216,52 @@ def test_server_process_brownian_strategy_is_reachable_in_paper_mode(tmp_path: P
     assert result["status"] == "paper_validated"
     assert list((tmp_path / "live").glob("*/*/live_input_state.jsonl"))
     assert list((tmp_path / "live").glob("*/*/decision_state.jsonl"))
+
+
+def test_brownian_live_input_builder_does_not_require_hmm_when_disabled(tmp_path: Path):
+    brownian_path = tmp_path / "brownian.json"
+    brownian_path.write_text(
+        """{
+          "model_id": "brownian_zero_drift__rv30",
+          "model_p_yes": 0.55,
+          "reference_price": 100.0,
+          "current_price": 100.01,
+          "rv30": 0.01,
+          "probability_convention": "replay-matched brownian_zero_drift__rv30",
+          "asof_ts": "2026-05-24T10:01:30Z",
+          "generated_ts": "2026-05-24T10:01:30Z"
+        }""",
+        encoding="utf-8",
+    )
+    builder = BTC5MCanaryLiveInputBuilder(
+        LiveInputBuilderConfig(
+            brownian_state_path=brownian_path,
+            hmm_state_path=None,
+            max_state_age_sec=60,
+            require_hmm_state=False,
+        ),
+        market_fn=lambda: {
+            "market": {
+                "market_id": "m1",
+                "condition_id": "c1",
+                "slug": "btc-updown",
+                "start_time": "2026-05-24T10:00:00Z",
+                "end_time": "2026-05-24T10:05:00Z",
+                "token_yes": "yes-token",
+                "token_no": "no-token",
+                "active": True,
+            }
+        },
+        quote_fn=lambda token: {
+            "fetch_ok": True,
+            "best_ask": 0.40 if token == "yes-token" else 0.90,
+            "ask_size": 1000,
+            "fetched_at": "2026-05-24T10:01:30Z",
+            "age_seconds": 0,
+        },
+        now_fn=lambda: __import__("datetime").datetime(2026, 5, 24, 10, 1, 30, tzinfo=__import__("datetime").timezone.utc),
+    )
+    built = builder.build()
+    assert built["ok"] is True
+    assert built["missing_components"] == []
+    assert built["input"]["hmm_state"] is None
