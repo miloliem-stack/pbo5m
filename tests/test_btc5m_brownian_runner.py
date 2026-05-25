@@ -159,6 +159,15 @@ def test_execution_error_status_is_returned(tmp_path: Path):
     assert result.reason == "boom"
 
 
+def test_execution_error_after_submit_is_not_reported_as_submitted(tmp_path: Path):
+    def execution(_):
+        return {"event_type": "execution_error_after_submit", "raw_error_reason": "order_version_mismatch"}
+
+    result = run(tmp_path, config=cfg(tmp_path, paper_only=False, live_enabled=True), execution_callback=execution)
+    assert result.status == "execution_rejected"
+    assert result.execution_result["event_type"] == "execution_error_after_submit"
+
+
 def test_duplicate_market_result_does_not_execute(tmp_path: Path):
     calls = {"execution": 0}
 

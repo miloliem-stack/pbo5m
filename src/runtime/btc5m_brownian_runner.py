@@ -126,7 +126,17 @@ def run_brownian_conservative_cycle(
     except Exception as exc:
         return _result("execution_error", decision=decision, validation=validation, execution_result={"error": str(exc)}, reason=str(exc))
     status = "submitted_live"
-    if str(execution_result.get("event_type") or execution_result.get("status") or "").lower() in {"execution_skipped", "execution_rejected", "rejected", "error"}:
+    execution_status = str(execution_result.get("event_type") or execution_result.get("status") or "").lower()
+    if execution_status in {
+        "execution_skipped",
+        "execution_rejected",
+        "execution_error",
+        "execution_error_after_submit",
+        "order_unknown_after_submit",
+        "rejected",
+        "error",
+        "unknown",
+    }:
         status = "execution_rejected"
     return _result(status, decision=decision, validation=validation, execution_result=execution_result, reason=execution_result.get("skip_reason") or execution_result.get("reject_reason"))
 
