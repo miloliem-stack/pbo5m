@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .btc5m_brownian_conservative import STRATEGY_ID as BROWNIAN_STRATEGY_ID
@@ -67,6 +68,9 @@ def run_brownian_from_live_input(
     risk_state = dict(live_input.get("risk_state") or {})
     risk_state.setdefault("bankroll", live_input.get("bankroll") or risk_state.get("current_bankroll") or risk_state.get("bankroll_before") or 0.0)
     snapshot = {**market, **quote}
+    paper_intent_log_path = None
+    if config is not None:
+        paper_intent_log_path = Path(config.validation_log_path).parent / "paper_order_intents.jsonl"
     return run_brownian_conservative_cycle(
         market=market,
         quote=quote,
@@ -77,6 +81,7 @@ def run_brownian_from_live_input(
         now_ts=live_input.get("decision_ts"),
         validation_now_ts=validation_now_ts,
         execution_callback=execution_callback,
+        paper_intent_log_path=paper_intent_log_path,
     )
 
 

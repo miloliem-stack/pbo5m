@@ -80,6 +80,9 @@ def run_brownian_conservative_cycle(
         risk["bankroll"] = bankroll
     if already_traded_market is not None:
         risk["already_traded_market"] = already_traded_market
+    paper_log = Path(paper_intent_log_path or PAPER_INTENT_LOG)
+    if cfg.paper_only and cfg.one_entry_per_market and not risk.get("already_traded_market"):
+        risk["already_traded_market"] = has_paper_market_entry(paper_log, market)
 
     decision = decide_brownian_conservative(
         market=market,
@@ -190,6 +193,40 @@ def write_paper_order_intent(path: str | Path, normalized_intent: dict[str, Any]
     }
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+
+
+def has_paper_market_entry(path: str | Path, market: dict[str, Any]) -> bool:
+    target = Path(path)
+    if not target.exists():
+        return False
+    market_ids = {str(value) for value in [market.get("market_id"), market.get("condition_id"), market.get("slug"), market.get("market_slug")] if value}
+    if not market_ids:
+        return False
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        row_ids = {
+            str(value)
+            for value in [
+                row.get("market_id"),
+                row.get("condition_id"),
+                row.get("market_slug"),
+                (row.get("debug") or {}).get("condition_id"),
+                (row.get("debug") or {}).get("market_slug"),
+            ]
+            if value
+        }
+        if market_ids & row_ids:
+            return True
+    return False
 
 
 def _build_snapshot(current: Optional[dict[str, Any]], market: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:

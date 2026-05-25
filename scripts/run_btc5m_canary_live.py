@@ -219,7 +219,10 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
         result = routed.result
         live_logger.write_decision(result)
         if result.get("status") in {"submitted_live", "execution_rejected", "execution_error", "paper_validated"}:
-            if cfg.paper_only or args.stop_after_first_eligible_decision:
+            if result.get("status") == "paper_validated":
+                if args.stop_after_first_eligible_decision:
+                    break
+            else:
                 break
         time.sleep(float(args.poll_interval_sec))
     return result

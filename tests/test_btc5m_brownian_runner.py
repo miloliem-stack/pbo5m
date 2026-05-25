@@ -193,6 +193,16 @@ def test_paper_order_intents_jsonl_row_is_written(tmp_path: Path):
         assert key in row
 
 
+def test_prior_paper_intent_blocks_duplicate_market(tmp_path: Path):
+    first = run(tmp_path)
+    assert first.status == "paper_validated"
+
+    second = run(tmp_path, now_ts="2026-05-24T10:02:00Z")
+    assert second.status == "no_trade"
+    assert second.reason == "already_traded_market"
+    assert len((tmp_path / "paper_order_intents.jsonl").read_text().splitlines()) == 1
+
+
 def test_conversion_contains_execution_metadata():
     request = brownian_normalized_intent_to_execution_request(
         {

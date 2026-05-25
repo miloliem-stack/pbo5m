@@ -9,3 +9,4 @@ state/
 *.db
 .DS_Store
 data/
+docs/
