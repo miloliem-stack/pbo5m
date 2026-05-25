@@ -133,12 +133,24 @@ class PyClobClientAdapter:
         private_key = self.env.get("POLY_WALLET_PRIVATE_KEY")
         if not private_key:
             raise RuntimeError("POLY_WALLET_PRIVATE_KEY is required for live BTC5M canary execution")
+        wallet_address = resolve_wallet_address(self.env)
+        raw_funder = self.env.get("POLY_FUNDER")
+        funder = raw_funder.strip() if raw_funder and raw_funder.strip() else wallet_address
+        signature_type = int(self.env.get("POLY_SIGNATURE_TYPE", "0"))
+        self.adapter_config = {
+            "host": self.env.get("POLY_CLOB_BASE", "https://clob.polymarket.com"),
+            "chain_id": int(self.env.get("POLYGON_CHAIN_ID", "137")),
+            "signature_type": signature_type,
+            "funder": funder,
+            "funder_source": "POLY_FUNDER" if raw_funder and raw_funder.strip() else "wallet_address",
+            "wallet_address": wallet_address,
+        }
         self.client = ClobClient(
-            host=self.env.get("POLY_CLOB_BASE", "https://clob.polymarket.com"),
+            host=self.adapter_config["host"],
             key=private_key,
-            chain_id=int(self.env.get("POLYGON_CHAIN_ID", "137")),
-            signature_type=int(self.env.get("POLY_SIGNATURE_TYPE", "0")),
-            funder=self.env.get("POLY_FUNDER"),
+            chain_id=self.adapter_config["chain_id"],
+            signature_type=signature_type,
+            funder=funder,
         )
         if self.env.get("POLY_API_KEY") and self.env.get("POLY_API_SECRET") and self.env.get("POLY_API_PASSPHRASE"):
             from py_clob_client.clob_types import ApiCreds
@@ -154,28 +166,29 @@ class PyClobClientAdapter:
             self.client.set_api_creds(self.client.create_or_derive_api_creds())
 
     def wallet_address(self) -> Optional[str]:
-        if self.env.get("POLY_WALLET_ADDRESS") or self.env.get("POLY_ADDRESS"):
-            return self.env.get("POLY_WALLET_ADDRESS") or self.env.get("POLY_ADDRESS")
-        private_key = self.env.get("POLY_WALLET_PRIVATE_KEY")
-        if not private_key:
-            return None
-        try:
-            from eth_account import Account
+        return self.adapter_config.get("wallet_address") or resolve_wallet_address(self.env)
 
-            return Account.from_key(private_key).address
-        except Exception:
-            return None
+    def redacted_adapter_config(self) -> dict[str, Any]:
+        return {
+            "host": self.adapter_config.get("host"),
+            "chain_id": self.adapter_config.get("chain_id"),
+            "signature_type": self.adapter_config.get("signature_type"),
+            "funder_set": bool(self.adapter_config.get("funder")),
+            "funder_source": self.adapter_config.get("funder_source"),
+            "wallet_address": self.adapter_config.get("wallet_address"),
+        }
 
     def submit_buy(self, intent: OrderIntent) -> dict[str, Any]:  # pragma: no cover - live adapter
+        order_type = getattr(self.OrderType, "FAK", "FAK")
         order_args = self.MarketOrderArgs(
             token_id=str(intent.token_id),
             amount=float(intent.stake_usd),
             side="BUY",
             price=float(intent.limit_price or intent.max_price or intent.selected_ask),
-            order_type=getattr(self.OrderType, "FAK", "FAK"),
+            order_type=order_type,
         )
         order = self.client.create_market_order(order_args)
-        result = self.client.post_order(order, orderType="FAK")
+        result = self.client.post_order(order, orderType=order_type)
         return result if isinstance(result, dict) else {"result": result}
 
     def get_order_status(self, order_id: str) -> dict[str, Any]:  # pragma: no cover - live adapter
@@ -248,6 +261,8 @@ class CanaryExecutor:
     def startup_check(self) -> dict[str, Any]:
         wallet = self.adapter.wallet_address() if self.adapter is not None else os.getenv("POLY_WALLET_ADDRESS")
         event = self._event("live_startup_check", wallet_address=wallet)
+        if self.adapter is not None and hasattr(self.adapter, "redacted_adapter_config"):
+            event["clob_adapter_config"] = self.adapter.redacted_adapter_config()  # type: ignore[attr-defined]
         errors: list[str] = []
         if self.config.execution_mode not in {"observe", "live"}:
             errors.append("invalid_execution_mode")
@@ -590,6 +605,20 @@ def extract_float(response: dict[str, Any], *keys: str) -> Optional[float]:
 
 def normalize_address(value: Optional[str]) -> Optional[str]:
     return str(value).strip().lower() if value else None
+
+
+def resolve_wallet_address(env: dict[str, str]) -> Optional[str]:
+    if env.get("POLY_WALLET_ADDRESS") or env.get("POLY_ADDRESS"):
+        return env.get("POLY_WALLET_ADDRESS") or env.get("POLY_ADDRESS")
+    private_key = env.get("POLY_WALLET_PRIVATE_KEY")
+    if not private_key:
+        return None
+    try:
+        from eth_account import Account
+
+        return Account.from_key(private_key).address
+    except Exception:
+        return None
 
 
 def _optional_float(value: Any) -> Optional[float]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from src.runtime.btc5m_canary_execution import (
     CanaryExecutor,
     ExecutionConfig,
     ExecutionJournal,
+    PyClobClientAdapter,
     add_decision_provenance,
     create_order_intent,
 )
@@ -267,6 +270,103 @@ def test_execution_events_jsonl_schema_is_stable(tmp_path: Path):
         "live_one_shot",
     }
     assert required.issubset(event)
+
+
+def test_pyclob_adapter_defaults_funder_to_wallet_address(monkeypatch):
+    created = {}
+
+    class FakeClobClient:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+        def create_or_derive_api_creds(self):
+            return object()
+
+        def set_api_creds(self, creds):
+            self.creds = creds
+
+    fake_client_module = types.SimpleNamespace(ClobClient=FakeClobClient)
+    fake_types_module = types.SimpleNamespace(
+        MarketOrderArgs=lambda **kwargs: kwargs,
+        OrderType=types.SimpleNamespace(FAK="FAK_ENUM"),
+        ApiCreds=lambda **kwargs: kwargs,
+    )
+    monkeypatch.setitem(sys.modules, "py_clob_client.client", fake_client_module)
+    monkeypatch.setitem(sys.modules, "py_clob_client.clob_types", fake_types_module)
+
+    adapter = PyClobClientAdapter(
+        env={
+            "POLY_WALLET_PRIVATE_KEY": "redacted",
+            "POLY_WALLET_ADDRESS": "0xWallet",
+            "POLY_CLOB_BASE": "https://clob.polymarket.com",
+            "POLYGON_CHAIN_ID": "137",
+            "POLY_SIGNATURE_TYPE": "0",
+        }
+    )
+
+    assert created["funder"] == "0xWallet"
+    assert created["signature_type"] == 0
+    assert adapter.redacted_adapter_config()["funder_source"] == "wallet_address"
+    assert "POLY_WALLET_PRIVATE_KEY" not in adapter.redacted_adapter_config()
+
+
+def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
+    posted = {}
+
+    class FakeClobClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def create_or_derive_api_creds(self):
+            return object()
+
+        def set_api_creds(self, creds):
+            self.creds = creds
+
+        def create_market_order(self, order_args):
+            posted["order_args"] = order_args
+            return {"signed": True}
+
+        def post_order(self, order, orderType):
+            posted["order"] = order
+            posted["orderType"] = orderType
+            return {"status": "submitted", "order_id": "ord1"}
+
+    fake_client_module = types.SimpleNamespace(ClobClient=FakeClobClient)
+    fake_types_module = types.SimpleNamespace(
+        MarketOrderArgs=lambda **kwargs: kwargs,
+        OrderType=types.SimpleNamespace(FAK="FAK_ENUM"),
+        ApiCreds=lambda **kwargs: kwargs,
+    )
+    monkeypatch.setitem(sys.modules, "py_clob_client.client", fake_client_module)
+    monkeypatch.setitem(sys.modules, "py_clob_client.clob_types", fake_types_module)
+    adapter = PyClobClientAdapter(
+        env={
+            "POLY_WALLET_PRIVATE_KEY": "redacted",
+            "POLY_WALLET_ADDRESS": "0xWallet",
+            "POLY_FUNDER": "0xFunder",
+            "POLY_SIGNATURE_TYPE": "1",
+        }
+    )
+    result = adapter.submit_buy(
+        type(
+            "Intent",
+            (),
+            {
+                "token_id": "token",
+                "stake_usd": 5.0,
+                "limit_price": 0.38,
+                "max_price": 0.39,
+                "selected_ask": 0.37,
+            },
+        )()
+    )
+
+    assert adapter.adapter_config["funder"] == "0xFunder"
+    assert adapter.adapter_config["signature_type"] == 1
+    assert posted["order_args"]["order_type"] == "FAK_ENUM"
+    assert posted["orderType"] == "FAK_ENUM"
+    assert result["order_id"] == "ord1"
 
 
 def test_valid_generated_decision_passes_executor_validation(tmp_path: Path):
