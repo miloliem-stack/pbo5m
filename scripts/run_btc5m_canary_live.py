@@ -198,11 +198,15 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
         built = builder.build()
         live_logger.write_live_input(built)
         if not built.get("ok"):
+            meta = (built.get("input") or {}).get("live_input_meta") or {}
             result = {
                 "status": "live_input_missing",
                 "strategy_id": BROWNIAN_STRATEGY_ID,
                 "missing_input_reason": built.get("missing_input_reason"),
                 "missing_components": built.get("missing_components") or [],
+                "brownian_error": meta.get("brownian_error"),
+                "brownian_source": meta.get("brownian_source"),
+                "hmm_error": meta.get("hmm_error"),
             }
             time.sleep(float(args.poll_interval_sec))
             continue

@@ -82,6 +82,41 @@ def test_live_state_producer_writes_hmm_json_atomically(tmp_path: Path):
     assert payload["model_artifact_hash"]
 
 
+def test_live_state_producer_brownian_only_skips_hmm_artifact(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BTC5M_LIVE_RV30", "0.01")
+    monkeypatch.setattr(
+        producer,
+        "build_brownian_state",
+        lambda reference_cache_path: {
+            "valid": True,
+            "model_id": "brownian_zero_drift__rv30",
+            "model_p_yes": 0.5,
+            "model_p_no": 0.5,
+            "probability_convention": "replay-matched brownian_zero_drift__rv30",
+            "asof_ts": NOW.isoformat(),
+            "generated_ts": NOW.isoformat(),
+        },
+    )
+    args = type(
+        "Args",
+        (),
+        {
+            "reference_cache_path": tmp_path / "cache.json",
+            "brownian_output_path": tmp_path / "brownian.json",
+            "hmm_output_path": tmp_path / "hmm.json",
+            "hmm_artifact_dir": None,
+            "hmm_source_name": "live_hmm_state_source.json",
+            "write_invalid_on_error": True,
+            "brownian_only": True,
+            "live": True,
+        },
+    )()
+    result = producer.run_once(args)
+    assert result["brownian"] == str(tmp_path / "brownian.json")
+    assert result["hmm"] == "skipped_brownian_only"
+    assert not (tmp_path / "hmm.json").exists()
+
+
 def test_missing_hmm_artifact_fails_loudly(tmp_path: Path):
     with pytest.raises(RuntimeError, match="hmm_artifact_dir_missing"):
         producer.build_hmm_state(artifact_dir=tmp_path / "missing", now=NOW)
@@ -103,4 +138,3 @@ def test_preflight_fails_when_live_output_dirs_not_writable(monkeypatch, tmp_pat
     rows = preflight.run_checks(live=True, route_fn=_router, quote_fn=lambda token: {"fetch_ok": True, "best_ask": 0.4}, price_fn=_price)
     failures = {row["check"]: row for row in rows if row["status"] == "FAIL"}
     assert "live_state_dir_writable" in failures
-

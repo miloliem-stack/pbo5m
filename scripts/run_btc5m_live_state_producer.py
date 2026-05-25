@@ -217,16 +217,19 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
         if args.live:
             raise
         written["brownian_error"] = str(exc)
-    try:
-        hmm = build_hmm_state(artifact_dir=args.hmm_artifact_dir, source_name=args.hmm_source_name)
-        atomic_write_json(args.hmm_output_path, hmm)
-        written["hmm"] = str(args.hmm_output_path)
-    except Exception as exc:
-        if args.write_invalid_on_error:
-            write_invalid_state(args.hmm_output_path, reason=str(exc), model_id=DEFAULT_HMM_MODEL_ID)
-        if args.live:
-            raise
-        written["hmm_error"] = str(exc)
+    if not args.brownian_only:
+        try:
+            hmm = build_hmm_state(artifact_dir=args.hmm_artifact_dir, source_name=args.hmm_source_name)
+            atomic_write_json(args.hmm_output_path, hmm)
+            written["hmm"] = str(args.hmm_output_path)
+        except Exception as exc:
+            if args.write_invalid_on_error:
+                write_invalid_state(args.hmm_output_path, reason=str(exc), model_id=DEFAULT_HMM_MODEL_ID)
+            if args.live:
+                raise
+            written["hmm_error"] = str(exc)
+    else:
+        written["hmm"] = "skipped_brownian_only"
     return written
 
 
@@ -239,6 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hmm-artifact-dir", type=Path, default=Path(os.environ["BTC5M_HMM_ARTIFACT_DIR"]) if os.environ.get("BTC5M_HMM_ARTIFACT_DIR") else None)
     parser.add_argument("--hmm-source-name", default=os.environ.get("BTC5M_HMM_SOURCE_NAME", DEFAULT_HMM_SOURCE_NAME))
     parser.add_argument("--poll-sec", type=float, default=float(os.environ.get("BTC5M_LIVE_STATE_PRODUCER_POLL_SEC", "2")))
+    parser.add_argument("--brownian-only", action="store_true", default=str(os.environ.get("BTC5M_LIVE_STATE_BROWNIAN_ONLY", "false")).lower() in {"1", "true", "yes", "on"})
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--live", action="store_true", help="Fail loudly on missing required inputs.")
     parser.add_argument("--write-invalid-on-error", action="store_true", default=True)
@@ -247,7 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.hmm_artifact_dir is None:
+    if args.hmm_artifact_dir is None and not args.brownian_only:
         print("BTC5M_HMM_ARTIFACT_DIR is required", file=sys.stderr)
         return 2
     while True:
