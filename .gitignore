@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .env
 .env.*
+!.env.btc5m.brownian.paper.example
+!.env.btc5m.brownian.live.example
+.env*.local
 artifacts/
 logs/
 state/

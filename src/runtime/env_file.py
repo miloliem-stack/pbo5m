@@ -5,10 +5,15 @@ from pathlib import Path
 from typing import Optional
 
 
-def load_env_file(path: str | Path = ".env", *, override: bool = False) -> dict[str, str]:
+SECRET_KEY_PARTS = ("PRIVATE_KEY", "SECRET", "TOKEN", "PASSWORD")
+
+
+def load_env_file(path: str | Path = ".env", *, override: bool = False, required: bool = False) -> dict[str, str]:
     target = Path(path)
     loaded: dict[str, str] = {}
     if not target.exists():
+        if required:
+            raise FileNotFoundError(f"env file does not exist: {target}")
         return loaded
     for raw_line in target.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -31,6 +36,17 @@ def load_env_file(path: str | Path = ".env", *, override: bool = False) -> dict[
 
 def load_default_env_file(env_var: str = "BTC5M_ENV_FILE") -> dict[str, str]:
     return load_env_file(os.environ.get(env_var, ".env"), override=False)
+
+
+def redact_env_value(key: str, value: str) -> str:
+    upper = key.upper()
+    if any(part in upper for part in SECRET_KEY_PARTS):
+        return "<redacted>"
+    return value
+
+
+def loaded_env_summary(loaded: dict[str, str]) -> dict[str, str]:
+    return {key: redact_env_value(key, value) for key, value in sorted(loaded.items())}
 
 
 def _parse_env_value(value: str) -> str:

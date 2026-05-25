@@ -146,3 +146,62 @@ The Brownian probability formula mirrors `scripts/sweep_probability_models_5m.py
 `p_yes = normal_cdf(log(current_price / reference_price) / (rv30 * sqrt(tau_minutes)))`
 
 TODO: move this formula into a shared probability-model library so live and research cannot drift.
+
+Environment Profiles
+--------------------
+
+Use the committed examples as templates and keep local files out of git:
+
+```bash
+cp .env.btc5m.brownian.paper.example .env.btc5m.brownian.paper.local
+cp .env.btc5m.brownian.live.example .env.btc5m.brownian.live.local
+```
+
+Paper profile:
+
+- `.env.btc5m.brownian.paper.example`
+- `.env.btc5m.brownian.paper.local`
+
+Live one-shot profile:
+
+- `.env.btc5m.brownian.live.example`
+- `.env.btc5m.brownian.live.local`
+
+The `.local` files are ignored by git. Never commit `.env.btc5m.brownian.live.local`; it contains wallet secrets.
+
+Paper run:
+
+```bash
+MAX_RUNTIME_SEC=300 scripts/run_btc5m_brownian_paper.sh
+```
+
+Live one-shot run:
+
+```bash
+MAX_RUNTIME_SEC=300 scripts/run_btc5m_brownian_live_oneshot.sh
+```
+
+The live one-shot script refuses to run if:
+
+- `.env.btc5m.brownian.live.local` is missing
+- `POLY_WALLET_PRIVATE_KEY` is missing or still `REPLACE_ME_DO_NOT_COMMIT`
+- `BTC5M_EXPECTED_WALLET_ADDRESS` is missing or still `REPLACE_ME_DO_NOT_COMMIT`
+- `BTC5M_BROWNIAN_PAPER_ONLY` is not `false`
+- `BTC5M_BROWNIAN_LIVE_ENABLED` is not `true`
+- `BTC5M_EXECUTION_MODE` is not `live`
+- `BTC5M_LIVE_ONE_SHOT` is not `true`
+
+The Python runner also supports:
+
+```bash
+.venv/bin/python scripts/run_btc5m_canary_live.py \
+  --env-file .env.btc5m.brownian.paper.local \
+  --build-live-input \
+  --max-runtime-sec 300
+```
+
+Env loading does not override already-set shell variables by default. It prints loaded key names and redacts keys containing `PRIVATE_KEY`, `SECRET`, `TOKEN`, or `PASSWORD`.
+
+Continuous live is blocked by default. To disable one-shot behavior, `BTC5M_ALLOW_CONTINUOUS_LIVE=true` must be explicitly set. This should not be used for first canary runs.
+
+`BTC5M_BROWNIAN_BANKROLL_USD` must reflect the effective canary bankroll, not an aspirational account target. The `$2000` threshold is minimum-order compatibility for a `$5` order at `0.25%` bankroll risk; it does not increase risk above the threshold.

@@ -211,6 +211,7 @@ def test_server_process_brownian_strategy_is_reachable_in_paper_mode(tmp_path: P
     monkeypatch.setenv("BTC5M_STRATEGY_ID", "brownian_no_hmm_conservative_v1")
     monkeypatch.setenv("BTC5M_BROWNIAN_ENABLED", "true")
     monkeypatch.setenv("BTC5M_BROWNIAN_PAPER_ONLY", "true")
+    monkeypatch.setenv("BTC5M_BROWNIAN_BANKROLL_USD", "2000")
     monkeypatch.setenv("BTC5M_BROWNIAN_DECISION_LOG", str(tmp_path / "decision_state.jsonl"))
     monkeypatch.setenv("BTC5M_BROWNIAN_VALIDATION_LOG", str(tmp_path / "order_validation.jsonl"))
     monkeypatch.setattr(live_runner, "BTC5MCanaryLiveInputBuilder", FakeBuilder)

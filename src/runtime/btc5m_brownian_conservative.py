@@ -427,3 +427,36 @@ def _env_bool(value: str | bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def validate_brownian_runtime_env(env: Optional[dict[str, str]] = None) -> list[str]:
+    source = env if env is not None else os.environ
+    errors: list[str] = []
+    cfg = BrownianConservativeConfig.from_env(source)
+    execution_mode = str(source.get("BTC5M_EXECUTION_MODE", "observe")).strip().lower()
+    live_one_shot = _env_bool(source.get("BTC5M_LIVE_ONE_SHOT", "true"))
+    allow_continuous_live = _env_bool(source.get("BTC5M_ALLOW_CONTINUOUS_LIVE", "false"))
+    bankroll_raw = source.get("BTC5M_BROWNIAN_BANKROLL_USD")
+    try:
+        bankroll = float(bankroll_raw) if bankroll_raw is not None else 0.0
+    except (TypeError, ValueError):
+        bankroll = 0.0
+
+    if cfg.enabled and bankroll <= 0:
+        errors.append("brownian_bankroll_missing_or_invalid")
+    if not cfg.paper_only and not cfg.live_enabled:
+        errors.append("live_not_enabled")
+    if cfg.live_enabled and execution_mode != "live":
+        errors.append("execution_mode_not_live")
+    if cfg.live_enabled and not live_one_shot and not allow_continuous_live:
+        errors.append("continuous_live_blocked")
+    if bankroll > 0 and bankroll < cfg.small_wallet_threshold and cfg.min_order_notional > cfg.small_wallet_max_stake_fraction * bankroll:
+        errors.append("small_wallet_min_order_violates_max_stake_fraction")
+    if cfg.live_enabled:
+        private_key = str(source.get("POLY_WALLET_PRIVATE_KEY", "")).strip()
+        expected_wallet = str(source.get("BTC5M_EXPECTED_WALLET_ADDRESS", "")).strip()
+        if not private_key or private_key == "REPLACE_ME_DO_NOT_COMMIT":
+            errors.append("polymarket_private_key_missing_or_placeholder")
+        if not expected_wallet or expected_wallet == "REPLACE_ME_DO_NOT_COMMIT":
+            errors.append("expected_wallet_missing_or_placeholder")
+    return errors

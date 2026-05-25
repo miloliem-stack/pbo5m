@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.runtime.env_file import load_default_env_file
+from src.runtime.env_file import loaded_env_summary, load_default_env_file, load_env_file
 
 load_default_env_file()
 
@@ -27,7 +27,7 @@ from src.runtime.btc5m_canary_execution import (
 )
 from src.runtime.btc5m_canary_policy import evaluate_canary_policy
 from src.runtime.btc5m_brownian_conservative import STRATEGY_ID as BROWNIAN_STRATEGY_ID
-from src.runtime.btc5m_brownian_conservative import BrownianConservativeConfig
+from src.runtime.btc5m_brownian_conservative import BrownianConservativeConfig, validate_brownian_runtime_env
 from src.runtime.btc5m_live_input_builder import BTC5MCanaryLiveInputBuilder, LiveInputBuilderConfig
 from src.runtime.btc5m_strategy_router import execute_brownian_request_with_canary_route, run_btc5m_strategy_cycle, selected_strategy_id
 from src.time_utils import utc_now
@@ -167,6 +167,9 @@ def run(args: argparse.Namespace) -> dict:
 
 def run_brownian_strategy(args: argparse.Namespace) -> dict:
     cfg = BrownianConservativeConfig.from_env()
+    env_errors = validate_brownian_runtime_env()
+    if env_errors:
+        raise RuntimeError("BTC5M Brownian runtime env refused: " + ", ".join(env_errors))
     if not args.build_live_input:
         return {
             "status": "observe_no_decision",
@@ -318,6 +321,7 @@ def _state_is_stale(payload: dict, max_age_sec: float) -> bool:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the guarded BTC-5M canary live executor.")
+    parser.add_argument("--env-file", type=Path, help="Load a KEY=VALUE env profile before reading runtime settings. Existing shell env wins by default.")
     parser.add_argument("--build-live-input", action="store_true", help="Discover the live BTC-5M market, build canary inputs, evaluate policy, and execute if eligible.")
     parser.add_argument("--decision-json", type=Path, help="Provenance-stamped policy decision JSON produced by the canary evaluator.")
     parser.add_argument("--decision-input-json", type=Path, help="Raw policy input JSON; runner evaluates policy and stamps provenance before execution.")
@@ -335,7 +339,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     try:
-        result = run(build_parser().parse_args(argv))
+        args = build_parser().parse_args(argv)
+        if args.env_file is not None:
+            loaded = load_env_file(args.env_file, override=False, required=True)
+            print(json.dumps({"env_file": str(args.env_file), "loaded_keys": sorted(loaded), "loaded": loaded_env_summary(loaded)}, sort_keys=True))
+        result = run(args)
     except Exception as exc:
         print(f"btc5m canary live runner failed: {exc}", file=sys.stderr)
         return 2
