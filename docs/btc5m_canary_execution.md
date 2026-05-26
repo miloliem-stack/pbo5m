@@ -65,7 +65,7 @@ The adapter logs redacted startup metadata:
 - `funder_source`
 - `wallet_address`
 
-The executor still submits only marketable BUY FAK orders using `MarketOrderArgs(amount=<stake_usd>, side=BUY, price=<capped_limit_price>, order_type=FAK)`.
+The executor submits only capped BUY FAK orders through the V2 `create_and_post_order(...)` path. It converts the validated USD stake into outcome-share size at the capped limit price and uses `OrderArgs(token_id=<token>, price=<capped_limit_price>, side=BUY, size=<stake/price>)`, `PartialCreateOrderOptions(tick_size="0.01")`, and `order_type=OrderType.FAK`. This preserves the canary rule that it must not pay above the validated limit price.
 
 ## Decision Provenance
 

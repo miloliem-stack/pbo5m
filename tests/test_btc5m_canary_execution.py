@@ -313,7 +313,9 @@ def test_pyclob_adapter_defaults_funder_to_wallet_address(monkeypatch):
         lambda: (
             FakeClobClient,
             lambda **kwargs: kwargs,
+            lambda **kwargs: kwargs,
             types.SimpleNamespace(FAK="FAK_ENUM"),
+            lambda **kwargs: kwargs,
             lambda **kwargs: kwargs,
             types.SimpleNamespace(BUY="BUY"),
             types.SimpleNamespace(EOA="EOA_ENUM", POLY_PROXY="POLY_PROXY_ENUM", GNOSIS_SAFE="GNOSIS_SAFE_ENUM", POLY_1271="POLY_1271_ENUM"),
@@ -352,14 +354,10 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
         def set_api_creds(self, creds):
             self.creds = creds
 
-        def create_market_order(self, order_args):
+        def create_and_post_order(self, order_args, options, order_type):
             posted["order_args"] = order_args
-            return {"signed": True}
-
-        def post_order(self, order, orderType, post_only=False):
-            posted["order"] = order
-            posted["orderType"] = orderType
-            posted["post_only"] = post_only
+            posted["options"] = options
+            posted["order_type"] = order_type
             return {"status": "submitted", "order_id": "ord1"}
 
     monkeypatch.setattr(
@@ -368,7 +366,9 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
         lambda: (
             FakeClobClient,
             lambda **kwargs: kwargs,
+            lambda **kwargs: kwargs,
             types.SimpleNamespace(FAK="FAK_ENUM"),
+            lambda **kwargs: kwargs,
             lambda **kwargs: kwargs,
             types.SimpleNamespace(BUY="BUY"),
             types.SimpleNamespace(EOA="EOA_ENUM", POLY_PROXY="POLY_PROXY_ENUM", GNOSIS_SAFE="GNOSIS_SAFE_ENUM", POLY_1271="POLY_1271_ENUM"),
@@ -399,9 +399,10 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
 
     assert adapter.adapter_config["funder"] == "0xFunder"
     assert adapter.adapter_config["signature_type"] == 1
-    assert posted["order_args"]["order_type"] == "FAK_ENUM"
-    assert posted["orderType"] == "FAK"
-    assert posted["post_only"] is False
+    assert posted["order_args"]["price"] == 0.38
+    assert posted["order_args"]["size"] == 13.1578
+    assert posted["order_type"] == "FAK_ENUM"
+    assert posted["options"]["tick_size"] == "0.01"
     assert result["order_id"] == "ord1"
 
 
@@ -421,7 +422,9 @@ def test_pyclob_adapter_accepts_signature_type_3_with_explicit_funder(monkeypatc
         lambda: (
             FakeClobClient,
             lambda **kwargs: kwargs,
+            lambda **kwargs: kwargs,
             types.SimpleNamespace(FAK="FAK_ENUM"),
+            lambda **kwargs: kwargs,
             lambda **kwargs: kwargs,
             types.SimpleNamespace(BUY="BUY"),
             types.SimpleNamespace(EOA="EOA_ENUM", POLY_PROXY="POLY_PROXY_ENUM", GNOSIS_SAFE="GNOSIS_SAFE_ENUM", POLY_1271="POLY_1271_ENUM"),
@@ -453,7 +456,7 @@ def test_live_startup_without_l2_creds_and_no_bootstrap_fails_closed(monkeypatch
     monkeypatch.setattr(
         canary_execution,
         "import_clob_v2_sdk",
-        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
     )
     monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
     adapter = PyClobClientAdapter(env={"POLY_WALLET_PRIVATE_KEY": "redacted", "POLY_WALLET_ADDRESS": "0xWallet"})
@@ -479,7 +482,7 @@ def test_live_startup_with_l2_creds_does_not_bootstrap(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(
         canary_execution,
         "import_clob_v2_sdk",
-        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
     )
     monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
     adapter = PyClobClientAdapter(
@@ -514,7 +517,7 @@ def test_bootstrap_flag_may_call_create_or_derive(monkeypatch):
     monkeypatch.setattr(
         canary_execution,
         "import_clob_v2_sdk",
-        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
     )
     monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
     adapter = PyClobClientAdapter(
@@ -539,7 +542,7 @@ def test_signature_type_3_without_explicit_funder_fails_startup(monkeypatch, tmp
     monkeypatch.setattr(
         canary_execution,
         "import_clob_v2_sdk",
-        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
     )
     monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
     adapter = PyClobClientAdapter(
@@ -568,7 +571,7 @@ def test_redacted_adapter_config_has_no_secrets(monkeypatch):
     monkeypatch.setattr(
         canary_execution,
         "import_clob_v2_sdk",
-        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
     )
     monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
     adapter = PyClobClientAdapter(

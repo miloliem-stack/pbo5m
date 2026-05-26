@@ -127,12 +127,14 @@ class PyClobClientAdapter:
     def __init__(self, *, env: Optional[dict[str, str]] = None) -> None:
         self.env = env if env is not None else os.environ
         try:
-            ClobClient, MarketOrderArgs, OrderType, ApiCreds, Side, SignatureTypeV2 = import_clob_v2_sdk()
+            ClobClient, MarketOrderArgs, OrderArgs, OrderType, PartialCreateOrderOptions, ApiCreds, Side, SignatureTypeV2 = import_clob_v2_sdk()
         except Exception as exc:  # pragma: no cover - depends on live optional dep
             raise RuntimeError(str(exc)) from exc
         self.ClobClient = ClobClient
         self.MarketOrderArgs = MarketOrderArgs
+        self.OrderArgs = OrderArgs
         self.OrderType = OrderType
+        self.PartialCreateOrderOptions = PartialCreateOrderOptions
         self.ApiCreds = ApiCreds
         self.Side = Side
         self.SignatureTypeV2 = SignatureTypeV2
@@ -156,6 +158,7 @@ class PyClobClientAdapter:
             "credential_error": None,
             "l2_credentials_present": False,
             "bootstrap_enabled": _env_bool(self.env.get("BTC5M_ALLOW_CLOB_API_KEY_BOOTSTRAP", "false")),
+            "tick_size": self.env.get("BTC5M_CLOB_TICK_SIZE", "0.01"),
             **sdk_meta,
         }
         if signature_type_int == 3 and not explicit_funder and not _env_bool(self.env.get("BTC5M_ALLOW_POLY_1271_WALLET_FUNDER", "false")):
@@ -216,20 +219,26 @@ class PyClobClientAdapter:
             "l2_credentials_present": bool(self.adapter_config.get("l2_credentials_present")),
             "bootstrap_enabled": bool(self.adapter_config.get("bootstrap_enabled")),
             "credential_error": self.adapter_config.get("credential_error"),
+            "tick_size": self.adapter_config.get("tick_size"),
         }
 
     def submit_buy(self, intent: OrderIntent) -> dict[str, Any]:  # pragma: no cover - live adapter
         order_type = getattr(self.OrderType, "FAK", "FAK")
         buy_side = getattr(self.Side, "BUY", "BUY") if self.Side is not None else "BUY"
-        order_args = self.MarketOrderArgs(
+        limit_price = float(intent.limit_price or intent.max_price or intent.selected_ask)
+        size = quantize_size(float(intent.stake_usd) / limit_price)
+        order_args = self.OrderArgs(
             token_id=str(intent.token_id),
-            amount=float(intent.stake_usd),
+            price=limit_price,
             side=buy_side,
-            price=float(intent.limit_price or intent.max_price or intent.selected_ask),
+            size=size,
+        )
+        options = self.PartialCreateOrderOptions(tick_size=str(self.adapter_config.get("tick_size") or "0.01"))
+        result = self.client.create_and_post_order(
+            order_args=order_args,
+            options=options,
             order_type=order_type,
         )
-        order = self.client.create_market_order(order_args)
-        result = self.client.post_order(order, orderType="FAK", post_only=False)
         return result if isinstance(result, dict) else {"result": result}
 
     def get_order_status(self, order_id: str) -> dict[str, Any]:  # pragma: no cover - live adapter
@@ -628,6 +637,11 @@ def quantize_price(value: float) -> float:
     return float(dec)
 
 
+def quantize_size(value: float) -> float:
+    dec = Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
+    return float(dec)
+
+
 def extract_order_id(response: dict[str, Any]) -> Optional[str]:
     for key in ["order_id", "orderID", "id"]:
         if response.get(key):
@@ -671,24 +685,24 @@ def clob_sdk_metadata() -> dict[str, Optional[str]]:
     return {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": version}
 
 
-def import_clob_v2_sdk() -> tuple[Any, Any, Any, Any, Any, Any]:
+def import_clob_v2_sdk() -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
     if importlib.util.find_spec("py_clob_client_v2") is None:
         if importlib.util.find_spec("py_clob_client") is not None:
             raise RuntimeError("clob_sdk_legacy_v1_refused: install py-clob-client-v2 and remove py-clob-client")
         raise RuntimeError("py-clob-client-v2 is required for live BTC5M canary execution")
     try:
-        from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderType, Side, SignatureTypeV2
+        from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderArgs, OrderType, PartialCreateOrderOptions, Side, SignatureTypeV2
     except ImportError:
         try:
-            from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderType, Side
+            from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderArgs, OrderType, PartialCreateOrderOptions, Side
 
             SignatureTypeV2 = None
         except ImportError:
-            from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderType
+            from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderArgs, OrderType, PartialCreateOrderOptions
 
             Side = None
             SignatureTypeV2 = None
-    return ClobClient, MarketOrderArgs, OrderType, ApiCreds, Side, SignatureTypeV2
+    return ClobClient, MarketOrderArgs, OrderArgs, OrderType, PartialCreateOrderOptions, ApiCreds, Side, SignatureTypeV2
 
 
 def parse_signature_type(value: str) -> int:
