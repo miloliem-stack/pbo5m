@@ -226,15 +226,15 @@ class PyClobClientAdapter:
         order_type = getattr(self.OrderType, "FAK", "FAK")
         buy_side = getattr(self.Side, "BUY", "BUY") if self.Side is not None else "BUY"
         limit_price = float(intent.limit_price or intent.max_price or intent.selected_ask)
-        size = quantize_size(float(intent.stake_usd) / limit_price)
-        order_args = self.OrderArgs(
+        spend_amount = quantize_usd_amount(float(intent.stake_usd))
+        order_args = self.MarketOrderArgs(
             token_id=str(intent.token_id),
+            amount=spend_amount,
             price=limit_price,
             side=buy_side,
-            size=size,
         )
         options = self.PartialCreateOrderOptions(tick_size=str(self.adapter_config.get("tick_size") or "0.01"))
-        result = self.client.create_and_post_order(
+        result = self.client.create_and_post_market_order(
             order_args=order_args,
             options=options,
             order_type=order_type,
@@ -633,6 +633,11 @@ def idempotency_key(**parts: Any) -> str:
 
 
 def quantize_price(value: float) -> float:
+    dec = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    return float(dec)
+
+
+def quantize_usd_amount(value: float) -> float:
     dec = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     return float(dec)
 

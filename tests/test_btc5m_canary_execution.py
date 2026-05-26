@@ -354,7 +354,7 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
         def set_api_creds(self, creds):
             self.creds = creds
 
-        def create_and_post_order(self, order_args, options, order_type):
+        def create_and_post_market_order(self, order_args, options, order_type):
             posted["order_args"] = order_args
             posted["options"] = options
             posted["order_type"] = order_type
@@ -400,10 +400,65 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
     assert adapter.adapter_config["funder"] == "0xFunder"
     assert adapter.adapter_config["signature_type"] == 1
     assert posted["order_args"]["price"] == 0.38
-    assert posted["order_args"]["size"] == 13.1578
+    assert posted["order_args"]["amount"] == 5.0
     assert posted["order_type"] == "FAK_ENUM"
     assert posted["options"]["tick_size"] == "0.01"
     assert result["order_id"] == "ord1"
+
+
+def test_pyclob_market_buy_amount_is_rounded_to_two_decimals(monkeypatch):
+    posted = {}
+
+    class FakeClobClient:
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            pass
+
+        def set_api_creds(self, creds):
+            self.creds = creds
+
+        def create_and_post_market_order(self, order_args, options, order_type):
+            posted["order_args"] = order_args
+            return {"status": "submitted", "order_id": "ord1"}
+
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (
+            FakeClobClient,
+            lambda **kwargs: kwargs,
+            lambda **kwargs: kwargs,
+            types.SimpleNamespace(FAK="FAK_ENUM"),
+            lambda **kwargs: kwargs,
+            lambda **kwargs: kwargs,
+            types.SimpleNamespace(BUY="BUY"),
+            None,
+        ),
+    )
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
+    adapter = PyClobClientAdapter(
+        env={
+            "POLY_WALLET_PRIVATE_KEY": "redacted",
+            "POLY_WALLET_ADDRESS": "0xWallet",
+            "POLY_API_KEY": "key",
+            "POLY_API_SECRET": "secret",
+            "POLY_API_PASSPHRASE": "pass",
+        }
+    )
+    adapter.submit_buy(
+        type(
+            "Intent",
+            (),
+            {
+                "token_id": "token",
+                "stake_usd": 5.009,
+                "limit_price": 0.38,
+                "max_price": 0.39,
+                "selected_ask": 0.37,
+            },
+        )()
+    )
+    assert posted["order_args"]["amount"] == 5.0
+    assert posted["order_args"]["price"] == 0.38
 
 
 def test_pyclob_adapter_accepts_signature_type_3_with_explicit_funder(monkeypatch):

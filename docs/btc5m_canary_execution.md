@@ -65,7 +65,7 @@ The adapter logs redacted startup metadata:
 - `funder_source`
 - `wallet_address`
 
-The executor submits only capped BUY FAK orders through the V2 `create_and_post_order(...)` path. It converts the validated USD stake into outcome-share size at the capped limit price and uses `OrderArgs(token_id=<token>, price=<capped_limit_price>, side=BUY, size=<stake/price>)`, `PartialCreateOrderOptions(tick_size="0.01")`, and `order_type=OrderType.FAK`. This preserves the canary rule that it must not pay above the validated limit price.
+The executor submits only capped BUY FAK orders through the V2 `create_and_post_market_order(...)` path. For BUY market orders, the SDK/API expects `amount` to be the dollar amount to spend and `price` to be the worst-price limit. The adapter uses `MarketOrderArgs(token_id=<token>, amount=<stake_usd rounded down to 2 decimals>, price=<capped_limit_price>, side=BUY)`, `PartialCreateOrderOptions(tick_size="0.01")`, and `order_type=OrderType.FAK`. This preserves the canary rule that it must not pay above the validated limit price.
 
 ## Decision Provenance
 
