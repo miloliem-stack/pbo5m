@@ -327,9 +327,10 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
             posted["order_args"] = order_args
             return {"signed": True}
 
-        def post_order(self, order, orderType):
+        def post_order(self, order, orderType, post_only=False):
             posted["order"] = order
             posted["orderType"] = orderType
+            posted["post_only"] = post_only
             return {"status": "submitted", "order_id": "ord1"}
 
     fake_client_module = types.SimpleNamespace(ClobClient=FakeClobClient)
@@ -365,7 +366,8 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
     assert adapter.adapter_config["funder"] == "0xFunder"
     assert adapter.adapter_config["signature_type"] == 1
     assert posted["order_args"]["order_type"] == "FAK_ENUM"
-    assert posted["orderType"] == "FAK_ENUM"
+    assert posted["orderType"] == "FAK"
+    assert posted["post_only"] is False
     assert result["order_id"] == "ord1"
 
 

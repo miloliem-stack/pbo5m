@@ -188,7 +188,7 @@ class PyClobClientAdapter:
             order_type=order_type,
         )
         order = self.client.create_market_order(order_args)
-        result = self.client.post_order(order, orderType=order_type)
+        result = self.client.post_order(order, orderType="FAK", post_only=False)
         return result if isinstance(result, dict) else {"result": result}
 
     def get_order_status(self, order_id: str) -> dict[str, Any]:  # pragma: no cover - live adapter
