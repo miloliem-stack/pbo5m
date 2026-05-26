@@ -122,6 +122,16 @@ Live mode:
 
 In live mode the runner passes only the normalized validator output into the existing execution journal/order lifecycle route. The route preserves duplicate-journal protection, one-shot order limiting, CLOB adapter submission, order polling, and execution event logging. The Brownian path does not send raw venue orders directly.
 
+Live execution requires the Polymarket CLOB V2 Python SDK, `py-clob-client-v2`. The shared execution adapter refuses legacy V1 `py-clob-client` wiring in live mode because production CLOB V2 rejects V1 signed orders with `order_version_mismatch`.
+
+Before another supervised one-shot after a CLOB SDK change, run:
+
+```bash
+.venv/bin/python scripts/diagnose_btc5m_clob_sdk.py --env-file .env
+```
+
+If `order_version_mismatch` appears in the execution journal, stop live attempts, upgrade/migrate the SDK, run a paper smoke test, then run exactly one supervised live one-shot again.
+
 Expected warmup/no-trade reasons include:
 
 - `missing_or_invalid_sigma` when `brownian_zero_drift__rv30` volatility input is unavailable

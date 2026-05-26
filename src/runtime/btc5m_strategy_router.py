@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 from .btc5m_brownian_conservative import STRATEGY_ID as BROWNIAN_STRATEGY_ID
 from .btc5m_brownian_conservative import BrownianConservativeConfig
 from .btc5m_brownian_runner import BrownianRunnerResult, run_brownian_conservative_cycle
-from .btc5m_canary_execution import CanaryExecutor, OrderIntent, extract_order_id, extract_status, idempotency_key, quantize_price
+from .btc5m_canary_execution import CanaryExecutor, OrderIntent, extract_order_id, extract_status, idempotency_key, normalize_clob_error, quantize_price
 from .btc5m_canary_policy import POLICY_ID as HMM_CANARY_POLICY_ID
 
 
@@ -116,7 +116,9 @@ def execute_brownian_request_with_canary_route(executor: CanaryExecutor, request
     try:
         submitted = executor.adapter.submit_buy(intent)
     except Exception as exc:
-        event = executor._event("execution_error_after_submit", intent=intent, raw_error_reason=str(exc))
+        normalized = normalize_clob_error(exc)
+        event_type = "execution_rejected_by_venue" if normalized["terminal"] else "execution_error_after_submit"
+        event = executor._event(event_type, intent=intent, **normalized)
         executor.journal.write(event)
         return event
     order_id = extract_order_id(submitted)

@@ -35,7 +35,20 @@ Warning: `BTC5M_EXECUTION_MODE=live` with `BTC5M_LIVE_TRADING_ENABLED=true` can 
 - `BTC5M_MAX_LIMIT_PRICE=0.49`
 - `BTC5M_DECISION_EXPIRY_MS=2000`
 
-Live CLOB submission uses `py-clob-client` semantics mirroring the BTC-1H project: `MarketOrderArgs(amount=<stake_usd>, side="BUY", price=<capped_limit_price>, order_type=FAK)`.
+Live CLOB submission requires the Polymarket CLOB V2 Python SDK, `py-clob-client-v2`. Legacy `py-clob-client` V1 signing is refused in live mode because production CLOB V2 rejects V1 signed orders with `order_version_mismatch`.
+
+The adapter logs redacted startup metadata:
+
+- `clob_sdk_family`
+- `clob_sdk_version`
+- `host`
+- `chain`
+- `signature_type`
+- `funder_set`
+- `funder_source`
+- `wallet_address`
+
+The executor still submits only marketable BUY FAK orders using `MarketOrderArgs(amount=<stake_usd>, side=BUY, price=<capped_limit_price>, order_type=FAK)`.
 
 ## Decision Provenance
 
@@ -69,8 +82,21 @@ The idempotency key is deterministic from policy id, condition/market id, token 
 - `order_partially_filled`
 - `order_unknown_after_submit`
 - `execution_error_after_submit`
+- `execution_rejected_by_venue`
 
 Reject/cancel/fail also block re-entry unless a later explicit flag changes that behavior.
+
+## CLOB V2 Operator Note
+
+If live submission returns `order_version_mismatch`, stop live attempts. That error means the process is still using V1 order signing or stale CLOB SDK wiring. Install/verify `py-clob-client-v2`, run a paper smoke test, inspect the redacted SDK diagnostics, and only then run one supervised live one-shot again.
+
+Diagnostic command:
+
+```bash
+.venv/bin/python scripts/diagnose_btc5m_clob_sdk.py --env-file .env
+```
+
+The diagnostic prints package family/version and adapter config without wallet private keys or API secrets.
 
 ## Observe Example
 

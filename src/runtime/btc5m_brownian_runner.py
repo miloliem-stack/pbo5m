@@ -132,6 +132,7 @@ def run_brownian_conservative_cycle(
         "execution_rejected",
         "execution_error",
         "execution_error_after_submit",
+        "execution_rejected_by_venue",
         "order_unknown_after_submit",
         "rejected",
         "error",

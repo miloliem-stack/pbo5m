@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sys
 import types
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pytest
 
+import src.runtime.btc5m_canary_execution as canary_execution
 from src.runtime.btc5m_canary_execution import (
     CanaryExecutor,
     ExecutionConfig,
@@ -14,6 +14,8 @@ from src.runtime.btc5m_canary_execution import (
     PyClobClientAdapter,
     add_decision_provenance,
     create_order_intent,
+    import_clob_v2_sdk,
+    normalize_clob_error,
 )
 from src.runtime.btc5m_canary_policy import CanaryConfig, POLICY_ID
 from scripts import run_btc5m_canary_live as live_runner
@@ -153,6 +155,26 @@ def test_expected_wallet_mismatch_refuses_startup(tmp_path: Path):
         executor.startup_check()
 
 
+def test_live_startup_refuses_legacy_clob_sdk(tmp_path: Path):
+    class LegacyAdapter(FakeAdapter):
+        def redacted_adapter_config(self):
+            return {"clob_sdk_family": "py-clob-client", "clob_sdk_version": "0.23.0"}
+
+    executor = _executor(tmp_path, adapter=LegacyAdapter())
+    with pytest.raises(RuntimeError, match="clob_sdk_legacy_v1_refused"):
+        executor.startup_check()
+
+
+def test_live_startup_refuses_unknown_clob_sdk_version(tmp_path: Path):
+    class UnknownVersionAdapter(FakeAdapter):
+        def redacted_adapter_config(self):
+            return {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": None}
+
+    executor = _executor(tmp_path, adapter=UnknownVersionAdapter())
+    with pytest.raises(RuntimeError, match="clob_sdk_version_unknown"):
+        executor.startup_check()
+
+
 def test_buy_yes_creates_yes_token_order_intent(tmp_path: Path):
     intent, reason = _create_intent(_decision(selected_side="YES", final_decision="BUY_YES"), _config(tmp_path))
     assert reason is None
@@ -276,23 +298,21 @@ def test_pyclob_adapter_defaults_funder_to_wallet_address(monkeypatch):
     created = {}
 
     class FakeClobClient:
-        def __init__(self, **kwargs):
-            created.update(kwargs)
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            created.update({"host": host, "key": key, "chain": chain, "signature_type": signature_type, "funder": funder, "creds": creds})
 
-        def create_or_derive_api_creds(self):
+        def create_or_derive_api_key(self):
             return object()
 
         def set_api_creds(self, creds):
             self.creds = creds
 
-    fake_client_module = types.SimpleNamespace(ClobClient=FakeClobClient)
-    fake_types_module = types.SimpleNamespace(
-        MarketOrderArgs=lambda **kwargs: kwargs,
-        OrderType=types.SimpleNamespace(FAK="FAK_ENUM"),
-        ApiCreds=lambda **kwargs: kwargs,
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY")),
     )
-    monkeypatch.setitem(sys.modules, "py_clob_client.client", fake_client_module)
-    monkeypatch.setitem(sys.modules, "py_clob_client.clob_types", fake_types_module)
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
 
     adapter = PyClobClientAdapter(
         env={
@@ -305,8 +325,10 @@ def test_pyclob_adapter_defaults_funder_to_wallet_address(monkeypatch):
     )
 
     assert created["funder"] == "0xWallet"
+    assert created["chain"] == 137
     assert created["signature_type"] == 0
     assert adapter.redacted_adapter_config()["funder_source"] == "wallet_address"
+    assert adapter.redacted_adapter_config()["clob_sdk_family"] == "py-clob-client-v2"
     assert "POLY_WALLET_PRIVATE_KEY" not in adapter.redacted_adapter_config()
 
 
@@ -314,10 +336,10 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
     posted = {}
 
     class FakeClobClient:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            self.kwargs = {"host": host, "key": key, "chain": chain, "signature_type": signature_type, "funder": funder, "creds": creds}
 
-        def create_or_derive_api_creds(self):
+        def create_or_derive_api_key(self):
             return object()
 
         def set_api_creds(self, creds):
@@ -333,14 +355,12 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
             posted["post_only"] = post_only
             return {"status": "submitted", "order_id": "ord1"}
 
-    fake_client_module = types.SimpleNamespace(ClobClient=FakeClobClient)
-    fake_types_module = types.SimpleNamespace(
-        MarketOrderArgs=lambda **kwargs: kwargs,
-        OrderType=types.SimpleNamespace(FAK="FAK_ENUM"),
-        ApiCreds=lambda **kwargs: kwargs,
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY")),
     )
-    monkeypatch.setitem(sys.modules, "py_clob_client.client", fake_client_module)
-    monkeypatch.setitem(sys.modules, "py_clob_client.clob_types", fake_types_module)
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
     adapter = PyClobClientAdapter(
         env={
             "POLY_WALLET_PRIVATE_KEY": "redacted",
@@ -369,6 +389,56 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
     assert posted["orderType"] == "FAK"
     assert posted["post_only"] is False
     assert result["order_id"] == "ord1"
+
+
+def test_requirements_do_not_reference_legacy_pyclob_package():
+    text = Path("requirements.txt").read_text(encoding="utf-8")
+    assert "py-clob-client-v2" in text
+    assert "py-clob-client>=" not in text
+
+
+def test_import_clob_v2_sdk_refuses_legacy_only(monkeypatch):
+    def fake_find_spec(name):
+        if name == "py_clob_client_v2":
+            return None
+        if name == "py_clob_client":
+            return object()
+        return None
+
+    monkeypatch.setattr(canary_execution.importlib.util, "find_spec", fake_find_spec)
+    with pytest.raises(RuntimeError, match="clob_sdk_legacy_v1_refused"):
+        import_clob_v2_sdk()
+
+
+def test_order_version_mismatch_normalizes_as_terminal_protocol_rejection():
+    normalized = normalize_clob_error(Exception("PolyApiException[status_code=400, error_message={'error': 'order_version_mismatch'}]"))
+    assert normalized["error_code"] == "order_version_mismatch"
+    assert normalized["terminal"] is True
+    assert normalized["retryable"] is False
+
+
+def test_order_version_mismatch_journaled_as_venue_rejection_without_poll(tmp_path: Path):
+    class RejectingAdapter(FakeAdapter):
+        def __init__(self):
+            super().__init__()
+            self.polls = 0
+
+        def submit_buy(self, intent):
+            self.submits.append(intent)
+            raise RuntimeError("PolyApiException[status_code=400, error_message={'error': 'order_version_mismatch'}]")
+
+        def get_order_status(self, order_id):
+            self.polls += 1
+            return super().get_order_status(order_id)
+
+    adapter = RejectingAdapter()
+    executor = _executor(tmp_path, adapter=adapter)
+    event = executor.execute_decision(_decision())
+    assert event["event_type"] == "execution_rejected_by_venue"
+    assert event["error_code"] == "order_version_mismatch"
+    assert event["terminal"] is True
+    assert event["retryable"] is False
+    assert adapter.polls == 0
 
 
 def test_valid_generated_decision_passes_executor_validation(tmp_path: Path):
