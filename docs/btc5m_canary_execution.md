@@ -37,6 +37,23 @@ Warning: `BTC5M_EXECUTION_MODE=live` with `BTC5M_LIVE_TRADING_ENABLED=true` can 
 
 Live CLOB submission requires the Polymarket CLOB V2 Python SDK, `py-clob-client-v2`. Legacy `py-clob-client` V1 signing is refused in live mode because production CLOB V2 rejects V1 signed orders with `order_version_mismatch`.
 
+Normal live canary runs require pre-created CLOB L2 credentials in env:
+
+- `POLY_API_KEY`
+- `POLY_API_SECRET`
+- `POLY_API_PASSPHRASE`
+
+Aliases are also accepted: `CLOB_API_KEY`, `CLOB_SECRET`, `CLOB_PASS_PHRASE` or `CLOB_PASSPHRASE`. The live adapter does not call `/auth/api-key` by default. If credentials are missing, startup fails closed with `missing_clob_l2_credentials`.
+
+`POLY_SIGNATURE_TYPE` meanings:
+
+- `0`: EOA flow; default funder is the wallet address.
+- `1`: Polymarket proxy flow.
+- `2`: Gnosis Safe flow.
+- `3`: POLY_1271 deposit-wallet flow; `POLY_FUNDER=<deposit wallet address>` is required unless an explicit override is set.
+
+For new deposit-wallet API users, `POLY_SIGNATURE_TYPE=3` plus `POLY_FUNDER=<deposit wallet address>` is commonly required.
+
 The adapter logs redacted startup metadata:
 
 - `clob_sdk_family`
@@ -90,10 +107,21 @@ Reject/cancel/fail also block re-entry unless a later explicit flag changes that
 
 If live submission returns `order_version_mismatch`, stop live attempts. That error means the process is still using V1 order signing or stale CLOB SDK wiring. Install/verify `py-clob-client-v2`, run a paper smoke test, inspect the redacted SDK diagnostics, and only then run one supervised live one-shot again.
 
+If diagnostics return `Could not create api key`, the bot failed during L2 credential bootstrap before order submission. Normal live canary runs should use pre-created L2 credentials rather than creating credentials on every startup. Use the one-time auth diagnostic/bootstrap script only when deliberately onboarding credentials.
+
 Diagnostic command:
 
 ```bash
 .venv/bin/python scripts/diagnose_btc5m_clob_sdk.py --env-file .env
+```
+
+One-time auth diagnostic/bootstrap command:
+
+```bash
+.venv/bin/python scripts/diagnose_polymarket_clob_auth.py \
+  --env-file .env \
+  --bootstrap-api-key \
+  --output-file .env.clob_l2.local
 ```
 
 The diagnostic prints package family/version and adapter config without wallet private keys or API secrets.

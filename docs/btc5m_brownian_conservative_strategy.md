@@ -124,6 +124,15 @@ In live mode the runner passes only the normalized validator output into the exi
 
 Live execution requires the Polymarket CLOB V2 Python SDK, `py-clob-client-v2`. The shared execution adapter refuses legacy V1 `py-clob-client` wiring in live mode because production CLOB V2 rejects V1 signed orders with `order_version_mismatch`.
 
+Live execution also requires CLOB L2 credentials in env. The normal canary runner does not create API keys implicitly. If `POLY_API_KEY`, `POLY_API_SECRET`, and `POLY_API_PASSPHRASE` are missing, live startup fails with `missing_clob_l2_credentials`.
+
+Signature type guidance:
+
+- `POLY_SIGNATURE_TYPE=0`: EOA flow, funder defaults to wallet address.
+- `POLY_SIGNATURE_TYPE=3`: POLY_1271 deposit-wallet flow, requires `POLY_FUNDER=<deposit wallet address>`.
+
+`Could not create api key` means the process failed during L2 credential bootstrap before any order submission. Use pre-created L2 credentials for live canary runs.
+
 Before another supervised one-shot after a CLOB SDK change, run:
 
 ```bash
@@ -131,6 +140,15 @@ Before another supervised one-shot after a CLOB SDK change, run:
 ```
 
 If `order_version_mismatch` appears in the execution journal, stop live attempts, upgrade/migrate the SDK, run a paper smoke test, then run exactly one supervised live one-shot again.
+
+One-time auth diagnostic/bootstrap, when intentionally onboarding credentials:
+
+```bash
+.venv/bin/python scripts/diagnose_polymarket_clob_auth.py \
+  --env-file .env \
+  --bootstrap-api-key \
+  --output-file .env.clob_l2.local
+```
 
 Expected warmup/no-trade reasons include:
 

@@ -310,7 +310,14 @@ def test_pyclob_adapter_defaults_funder_to_wallet_address(monkeypatch):
     monkeypatch.setattr(
         canary_execution,
         "import_clob_v2_sdk",
-        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY")),
+        lambda: (
+            FakeClobClient,
+            lambda **kwargs: kwargs,
+            types.SimpleNamespace(FAK="FAK_ENUM"),
+            lambda **kwargs: kwargs,
+            types.SimpleNamespace(BUY="BUY"),
+            types.SimpleNamespace(EOA="EOA_ENUM", POLY_PROXY="POLY_PROXY_ENUM", GNOSIS_SAFE="GNOSIS_SAFE_ENUM", POLY_1271="POLY_1271_ENUM"),
+        ),
     )
     monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
 
@@ -326,7 +333,7 @@ def test_pyclob_adapter_defaults_funder_to_wallet_address(monkeypatch):
 
     assert created["funder"] == "0xWallet"
     assert created["chain"] == 137
-    assert created["signature_type"] == 0
+    assert created["signature_type"] == "EOA_ENUM"
     assert adapter.redacted_adapter_config()["funder_source"] == "wallet_address"
     assert adapter.redacted_adapter_config()["clob_sdk_family"] == "py-clob-client-v2"
     assert "POLY_WALLET_PRIVATE_KEY" not in adapter.redacted_adapter_config()
@@ -358,7 +365,14 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
     monkeypatch.setattr(
         canary_execution,
         "import_clob_v2_sdk",
-        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY")),
+        lambda: (
+            FakeClobClient,
+            lambda **kwargs: kwargs,
+            types.SimpleNamespace(FAK="FAK_ENUM"),
+            lambda **kwargs: kwargs,
+            types.SimpleNamespace(BUY="BUY"),
+            types.SimpleNamespace(EOA="EOA_ENUM", POLY_PROXY="POLY_PROXY_ENUM", GNOSIS_SAFE="GNOSIS_SAFE_ENUM", POLY_1271="POLY_1271_ENUM"),
+        ),
     )
     monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
     adapter = PyClobClientAdapter(
@@ -391,6 +405,187 @@ def test_pyclob_adapter_honors_explicit_funder_and_posts_fak_enum(monkeypatch):
     assert result["order_id"] == "ord1"
 
 
+def test_pyclob_adapter_accepts_signature_type_3_with_explicit_funder(monkeypatch):
+    created = {}
+
+    class FakeClobClient:
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            created.update({"signature_type": signature_type, "funder": funder, "creds": creds})
+
+        def set_api_creds(self, creds):
+            self.creds = creds
+
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (
+            FakeClobClient,
+            lambda **kwargs: kwargs,
+            types.SimpleNamespace(FAK="FAK_ENUM"),
+            lambda **kwargs: kwargs,
+            types.SimpleNamespace(BUY="BUY"),
+            types.SimpleNamespace(EOA="EOA_ENUM", POLY_PROXY="POLY_PROXY_ENUM", GNOSIS_SAFE="GNOSIS_SAFE_ENUM", POLY_1271="POLY_1271_ENUM"),
+        ),
+    )
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
+    adapter = PyClobClientAdapter(
+        env={
+            "POLY_WALLET_PRIVATE_KEY": "redacted",
+            "POLY_WALLET_ADDRESS": "0xWallet",
+            "POLY_FUNDER": "0xDepositWallet",
+            "POLY_SIGNATURE_TYPE": "3",
+            "POLY_API_KEY": "key",
+            "POLY_API_SECRET": "secret",
+            "POLY_API_PASSPHRASE": "pass",
+        }
+    )
+    assert created["signature_type"] == "POLY_1271_ENUM"
+    assert created["funder"] == "0xDepositWallet"
+    assert adapter.redacted_adapter_config()["signature_type_name"] == "POLY_1271"
+    assert adapter.redacted_adapter_config()["credential_error"] is None
+
+
+def test_live_startup_without_l2_creds_and_no_bootstrap_fails_closed(monkeypatch, tmp_path: Path):
+    class FakeClobClient:
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            pass
+
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+    )
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
+    adapter = PyClobClientAdapter(env={"POLY_WALLET_PRIVATE_KEY": "redacted", "POLY_WALLET_ADDRESS": "0xWallet"})
+    executor = _executor(tmp_path, adapter=adapter)
+    with pytest.raises(RuntimeError, match="missing_clob_l2_credentials"):
+        executor.startup_check()
+
+
+def test_live_startup_with_l2_creds_does_not_bootstrap(monkeypatch, tmp_path: Path):
+    calls = {"derive": 0}
+
+    class FakeClobClient:
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            pass
+
+        def create_or_derive_api_key(self):
+            calls["derive"] += 1
+            return object()
+
+        def set_api_creds(self, creds):
+            self.creds = creds
+
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+    )
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
+    adapter = PyClobClientAdapter(
+        env={
+            "POLY_WALLET_PRIVATE_KEY": "redacted",
+            "POLY_WALLET_ADDRESS": "0xWallet",
+            "POLY_API_KEY": "key",
+            "POLY_API_SECRET": "secret",
+            "POLY_API_PASSPHRASE": "pass",
+        }
+    )
+    executor = _executor(tmp_path, adapter=adapter)
+    startup = executor.startup_check()
+    assert startup["startup_ok"] is True
+    assert calls["derive"] == 0
+
+
+def test_bootstrap_flag_may_call_create_or_derive(monkeypatch):
+    calls = {"derive": 0}
+
+    class FakeClobClient:
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            pass
+
+        def create_or_derive_api_key(self):
+            calls["derive"] += 1
+            return {"apiKey": "key", "secret": "secret", "passphrase": "pass"}
+
+        def set_api_creds(self, creds):
+            self.creds = creds
+
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+    )
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
+    adapter = PyClobClientAdapter(
+        env={
+            "POLY_WALLET_PRIVATE_KEY": "redacted",
+            "POLY_WALLET_ADDRESS": "0xWallet",
+            "BTC5M_ALLOW_CLOB_API_KEY_BOOTSTRAP": "true",
+        }
+    )
+    assert calls["derive"] == 1
+    assert adapter.redacted_adapter_config()["l2_credentials_present"] is True
+
+
+def test_signature_type_3_without_explicit_funder_fails_startup(monkeypatch, tmp_path: Path):
+    class FakeClobClient:
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            pass
+
+        def set_api_creds(self, creds):
+            self.creds = creds
+
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+    )
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
+    adapter = PyClobClientAdapter(
+        env={
+            "POLY_WALLET_PRIVATE_KEY": "redacted",
+            "POLY_WALLET_ADDRESS": "0xWallet",
+            "POLY_SIGNATURE_TYPE": "3",
+            "POLY_API_KEY": "key",
+            "POLY_API_SECRET": "secret",
+            "POLY_API_PASSPHRASE": "pass",
+        }
+    )
+    executor = _executor(tmp_path, adapter=adapter)
+    with pytest.raises(RuntimeError, match="missing_deposit_wallet_funder"):
+        executor.startup_check()
+
+
+def test_redacted_adapter_config_has_no_secrets(monkeypatch):
+    class FakeClobClient:
+        def __init__(self, host, key, chain, signature_type, funder, creds=None):
+            pass
+
+        def set_api_creds(self, creds):
+            self.creds = creds
+
+    monkeypatch.setattr(
+        canary_execution,
+        "import_clob_v2_sdk",
+        lambda: (FakeClobClient, lambda **kwargs: kwargs, types.SimpleNamespace(FAK="FAK_ENUM"), lambda **kwargs: kwargs, types.SimpleNamespace(BUY="BUY"), None),
+    )
+    monkeypatch.setattr(canary_execution, "clob_sdk_metadata", lambda: {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": "2.0.0"})
+    adapter = PyClobClientAdapter(
+        env={
+            "POLY_WALLET_PRIVATE_KEY": "private",
+            "POLY_WALLET_ADDRESS": "0xWallet",
+            "POLY_API_KEY": "key",
+            "POLY_API_SECRET": "secret",
+            "POLY_API_PASSPHRASE": "pass",
+        }
+    )
+    encoded = str(adapter.redacted_adapter_config())
+    assert "private" not in encoded
+    assert "secret" not in encoded
+    assert "pass" not in encoded
+
+
 def test_requirements_do_not_reference_legacy_pyclob_package():
     text = Path("requirements.txt").read_text(encoding="utf-8")
     assert "py-clob-client-v2" in text
@@ -413,6 +608,13 @@ def test_import_clob_v2_sdk_refuses_legacy_only(monkeypatch):
 def test_order_version_mismatch_normalizes_as_terminal_protocol_rejection():
     normalized = normalize_clob_error(Exception("PolyApiException[status_code=400, error_message={'error': 'order_version_mismatch'}]"))
     assert normalized["error_code"] == "order_version_mismatch"
+    assert normalized["terminal"] is True
+    assert normalized["retryable"] is False
+
+
+def test_clob_api_key_create_failure_normalizes_as_terminal_auth_rejection():
+    normalized = normalize_clob_error(Exception("[py_clob_client_v2] request error status=400 url=https://clob.polymarket.com/auth/api-key body={\"error\":\"Could not create api key\"}"))
+    assert normalized["error_code"] == "clob_api_key_create_failed"
     assert normalized["terminal"] is True
     assert normalized["retryable"] is False
 

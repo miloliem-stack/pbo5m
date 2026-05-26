@@ -127,7 +127,7 @@ class PyClobClientAdapter:
     def __init__(self, *, env: Optional[dict[str, str]] = None) -> None:
         self.env = env if env is not None else os.environ
         try:
-            ClobClient, MarketOrderArgs, OrderType, ApiCreds, Side = import_clob_v2_sdk()
+            ClobClient, MarketOrderArgs, OrderType, ApiCreds, Side, SignatureTypeV2 = import_clob_v2_sdk()
         except Exception as exc:  # pragma: no cover - depends on live optional dep
             raise RuntimeError(str(exc)) from exc
         self.ClobClient = ClobClient
@@ -135,42 +135,53 @@ class PyClobClientAdapter:
         self.OrderType = OrderType
         self.ApiCreds = ApiCreds
         self.Side = Side
+        self.SignatureTypeV2 = SignatureTypeV2
         sdk_meta = clob_sdk_metadata()
         private_key = self.env.get("POLY_WALLET_PRIVATE_KEY")
         if not private_key:
             raise RuntimeError("POLY_WALLET_PRIVATE_KEY is required for live BTC5M canary execution")
         wallet_address = resolve_wallet_address(self.env)
         raw_funder = self.env.get("POLY_FUNDER")
-        funder = raw_funder.strip() if raw_funder and raw_funder.strip() else wallet_address
-        signature_type = parse_signature_type(self.env.get("POLY_SIGNATURE_TYPE", "0"))
+        explicit_funder = bool(raw_funder and raw_funder.strip())
+        funder = raw_funder.strip() if explicit_funder else wallet_address
+        signature_type_int = parse_signature_type(self.env.get("POLY_SIGNATURE_TYPE", "0"))
         chain = int(self.env.get("POLYGON_CHAIN_ID", "137"))
         self.adapter_config = {
             "host": self.env.get("POLY_CLOB_BASE", "https://clob.polymarket.com"),
             "chain": chain,
-            "signature_type": signature_type,
+            "signature_type": signature_type_int,
             "funder": funder,
-            "funder_source": "POLY_FUNDER" if raw_funder and raw_funder.strip() else "wallet_address",
+            "funder_source": "POLY_FUNDER" if explicit_funder else "wallet_address",
             "wallet_address": wallet_address,
+            "credential_error": None,
+            "l2_credentials_present": False,
+            "bootstrap_enabled": _env_bool(self.env.get("BTC5M_ALLOW_CLOB_API_KEY_BOOTSTRAP", "false")),
             **sdk_meta,
         }
+        if signature_type_int == 3 and not explicit_funder and not _env_bool(self.env.get("BTC5M_ALLOW_POLY_1271_WALLET_FUNDER", "false")):
+            self.adapter_config["credential_error"] = "missing_deposit_wallet_funder"
         self.client = self._make_client(private_key=private_key, creds=None)
-        creds = None
-        if self.env.get("POLY_API_KEY") and self.env.get("POLY_API_SECRET") and self.env.get("POLY_API_PASSPHRASE"):
-            creds = make_api_creds(
-                self.ApiCreds,
-                api_key=self.env["POLY_API_KEY"],
-                api_secret=self.env["POLY_API_SECRET"],
-                api_passphrase=self.env["POLY_API_PASSPHRASE"],
-            )
+        creds = get_l2_api_creds_from_env(self.env, self.ApiCreds)
+        if creds is not None:
+            self.adapter_config["l2_credentials_present"] = True
+        elif self.adapter_config["bootstrap_enabled"]:
+            try:
+                creds = derive_api_creds(self.client)
+                self.adapter_config["l2_credentials_present"] = True
+            except Exception as exc:
+                normalized = normalize_clob_error(exc)
+                self.adapter_config["credential_error"] = normalized["error_code"]
+                self.adapter_config["credential_error_raw"] = normalized["raw_error_reason"]
         else:
-            creds = derive_api_creds(self.client)
-        self._attach_api_creds(private_key=private_key, creds=creds)
+            self.adapter_config["credential_error"] = "missing_clob_l2_credentials"
+        if creds is not None:
+            self._attach_api_creds(private_key=private_key, creds=creds)
 
     def _make_client(self, *, private_key: str, creds: Any = None) -> Any:
         kwargs = {
             "host": self.adapter_config["host"],
             "key": private_key,
-            "signature_type": self.adapter_config["signature_type"],
+            "signature_type": map_signature_type(self.adapter_config["signature_type"], self.SignatureTypeV2),
             "funder": self.adapter_config["funder"],
         }
         if creds is not None:
@@ -198,9 +209,13 @@ class PyClobClientAdapter:
             "host": self.adapter_config.get("host"),
             "chain": self.adapter_config.get("chain"),
             "signature_type": self.adapter_config.get("signature_type"),
+            "signature_type_name": signature_type_name(self.adapter_config.get("signature_type")),
             "funder_set": bool(self.adapter_config.get("funder")),
             "funder_source": self.adapter_config.get("funder_source"),
             "wallet_address": self.adapter_config.get("wallet_address"),
+            "l2_credentials_present": bool(self.adapter_config.get("l2_credentials_present")),
+            "bootstrap_enabled": bool(self.adapter_config.get("bootstrap_enabled")),
+            "credential_error": self.adapter_config.get("credential_error"),
         }
 
     def submit_buy(self, intent: OrderIntent) -> dict[str, Any]:  # pragma: no cover - live adapter
@@ -221,6 +236,9 @@ class PyClobClientAdapter:
         result = self.client.get_order(order_id)
         return result if isinstance(result, dict) else {"result": result}
 
+    def bootstrap_api_creds_once(self) -> Any:
+        creds = derive_api_creds(self.client)
+        return creds
 
 class ExecutionJournal:
     def __init__(self, root: str | Path, *, now_fn=utc_now) -> None:
@@ -313,6 +331,10 @@ class CanaryExecutor:
                     errors.append("clob_sdk_legacy_v1_refused")
                 if not adapter_config.get("clob_sdk_version"):
                     errors.append("clob_sdk_version_unknown")
+                if adapter_config.get("credential_error"):
+                    errors.append(str(adapter_config["credential_error"]))
+                if not adapter_config.get("l2_credentials_present") and "missing_clob_l2_credentials" not in errors:
+                    errors.append("missing_clob_l2_credentials")
             if not wallet:
                 errors.append("wallet_missing")
             if self.config.expected_wallet_address and normalize_address(wallet) != normalize_address(self.config.expected_wallet_address):
@@ -649,18 +671,24 @@ def clob_sdk_metadata() -> dict[str, Optional[str]]:
     return {"clob_sdk_family": "py-clob-client-v2", "clob_sdk_version": version}
 
 
-def import_clob_v2_sdk() -> tuple[Any, Any, Any, Any, Any]:
+def import_clob_v2_sdk() -> tuple[Any, Any, Any, Any, Any, Any]:
     if importlib.util.find_spec("py_clob_client_v2") is None:
         if importlib.util.find_spec("py_clob_client") is not None:
             raise RuntimeError("clob_sdk_legacy_v1_refused: install py-clob-client-v2 and remove py-clob-client")
         raise RuntimeError("py-clob-client-v2 is required for live BTC5M canary execution")
     try:
-        from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderType, Side
+        from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderType, Side, SignatureTypeV2
     except ImportError:
-        from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderType
+        try:
+            from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderType, Side
 
-        Side = None
-    return ClobClient, MarketOrderArgs, OrderType, ApiCreds, Side
+            SignatureTypeV2 = None
+        except ImportError:
+            from py_clob_client_v2 import ApiCreds, ClobClient, MarketOrderArgs, OrderType
+
+            Side = None
+            SignatureTypeV2 = None
+    return ClobClient, MarketOrderArgs, OrderType, ApiCreds, Side, SignatureTypeV2
 
 
 def parse_signature_type(value: str) -> int:
@@ -668,9 +696,27 @@ def parse_signature_type(value: str) -> int:
         parsed = int(str(value).strip())
     except (TypeError, ValueError) as exc:
         raise RuntimeError("unsupported_poly_signature_type") from exc
-    if parsed not in {0, 1, 2}:
+    if parsed not in {0, 1, 2, 3}:
         raise RuntimeError("unsupported_poly_signature_type")
     return parsed
+
+
+def map_signature_type(value: int, signature_type_enum: Any) -> Any:
+    if signature_type_enum is None:
+        return value
+    names = {0: "EOA", 1: "POLY_PROXY", 2: "GNOSIS_SAFE", 3: "POLY_1271"}
+    name = names.get(value)
+    if name and hasattr(signature_type_enum, name):
+        return getattr(signature_type_enum, name)
+    return value
+
+
+def signature_type_name(value: Any) -> str:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return {0: "EOA", 1: "POLY_PROXY", 2: "GNOSIS_SAFE", 3: "POLY_1271"}.get(parsed, str(parsed))
 
 
 def make_api_creds(api_creds_cls: Any, *, api_key: str, api_secret: str, api_passphrase: str) -> Any:
@@ -681,6 +727,28 @@ def make_api_creds(api_creds_cls: Any, *, api_key: str, api_secret: str, api_pas
             return api_creds_cls(apiKey=api_key, secret=api_secret, passphrase=api_passphrase)
         except TypeError:
             return {"apiKey": api_key, "secret": api_secret, "passphrase": api_passphrase}
+
+
+def get_l2_api_creds_from_env(env: dict[str, str], api_creds_cls: Any) -> Any:
+    api_key = first_non_placeholder(env, "POLY_API_KEY", "CLOB_API_KEY")
+    api_secret = first_non_placeholder(env, "POLY_API_SECRET", "CLOB_SECRET")
+    api_passphrase = first_non_placeholder(env, "POLY_API_PASSPHRASE", "CLOB_PASS_PHRASE", "CLOB_PASSPHRASE")
+    if not (api_key and api_secret and api_passphrase):
+        return None
+    return make_api_creds(api_creds_cls, api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
+
+
+def first_non_placeholder(env: dict[str, str], *keys: str) -> Optional[str]:
+    for key in keys:
+        value = env.get(key)
+        if value and not is_placeholder_secret(value):
+            return value
+    return None
+
+
+def is_placeholder_secret(value: str) -> bool:
+    normalized = str(value).strip()
+    return normalized in {"", "REPLACE_ME", "REPLACE_ME_DO_NOT_COMMIT", "0xYourCanaryWallet"}
 
 
 def derive_api_creds(client: Any) -> Any:
@@ -713,6 +781,10 @@ def normalize_clob_error(exc: BaseException) -> dict[str, Any]:
     retryable = True
     if "order_version_mismatch" in lowered:
         code = "order_version_mismatch"
+        terminal = True
+        retryable = False
+    elif "/auth/api-key" in lowered or "could not create api key" in lowered or "create api key" in lowered:
+        code = "clob_api_key_create_failed"
         terminal = True
         retryable = False
     elif "not enough balance" in lowered or "allowance" in lowered:
