@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from scripts.update_btc5m_market_resolutions import update_once
+from src.runtime.btc5m_resolution_source import GammaCtfResolutionSource
 from src.runtime.btc5m_live_ledger import LiveLedger
 
 
@@ -51,3 +52,93 @@ def test_unresolved_markets_do_not_become_redeemable(tmp_path: Path):
 
     assert summary["unresolved"] == 1
     assert ledger.redeemable_lots() == []
+
+
+class FakeFunctions:
+    def __init__(self, denominator, nums):
+        self.denominator = denominator
+        self.nums = nums
+
+    def payoutDenominator(self, condition):
+        return Call(self.denominator)
+
+    def payoutNumerators(self, condition, idx):
+        return Call(self.nums[idx])
+
+
+class Call:
+    def __init__(self, value):
+        self.value = value
+
+    def call(self):
+        return self.value
+
+
+class FakeWeb3:
+    def __init__(self, denominator, nums):
+        self.eth = self.Eth(denominator, nums)
+
+    def to_checksum_address(self, address):
+        return address
+
+    class Eth:
+        chain_id = 137
+
+        def __init__(self, denominator, nums):
+            self.denominator = denominator
+            self.nums = nums
+
+        def contract(self, address, abi):
+            return type("Contract", (), {"functions": FakeFunctions(self.denominator, self.nums)})()
+
+
+def test_real_source_resolves_yes_only_when_gamma_and_ctf_agree():
+    source = GammaCtfResolutionSource(
+        env={"POLYGON_RPC": "mock"},
+        web3=FakeWeb3(denominator=1, nums=[1, 0]),
+        gamma_fetcher=lambda lot: {"closed": True, "outcomes": '["Yes","No"]', "outcomePrices": '["1","0"]'},
+    )
+
+    result = source.resolve({"condition_id": "0x" + "11" * 32})
+
+    assert result["resolved"] is True
+    assert result["winning_side"] == "YES"
+
+
+def test_real_source_resolves_no_only_when_gamma_and_ctf_agree():
+    source = GammaCtfResolutionSource(
+        env={"POLYGON_RPC": "mock"},
+        web3=FakeWeb3(denominator=1, nums=[0, 1]),
+        gamma_fetcher=lambda lot: {"closed": True, "outcomes": '["Yes","No"]', "outcomePrices": '["0","1"]'},
+    )
+
+    result = source.resolve({"condition_id": "0x" + "11" * 32})
+
+    assert result["resolved"] is True
+    assert result["winning_side"] == "NO"
+
+
+def test_gamma_resolved_but_onchain_unresolved_fails_closed():
+    source = GammaCtfResolutionSource(
+        env={"POLYGON_RPC": "mock"},
+        web3=FakeWeb3(denominator=0, nums=[0, 0]),
+        gamma_fetcher=lambda lot: {"closed": True, "outcomes": '["Yes","No"]', "outcomePrices": '["1","0"]'},
+    )
+
+    result = source.resolve({"condition_id": "0x" + "11" * 32})
+
+    assert result["resolved"] is False
+    assert result["error"] == "ctf_unresolved"
+
+
+def test_onchain_resolved_but_gamma_ambiguous_fails_closed():
+    source = GammaCtfResolutionSource(
+        env={"POLYGON_RPC": "mock"},
+        web3=FakeWeb3(denominator=1, nums=[1, 0]),
+        gamma_fetcher=lambda lot: {"closed": True, "outcomes": '["Yes","No"]'},
+    )
+
+    result = source.resolve({"condition_id": "0x" + "11" * 32})
+
+    assert result["resolved"] is False
+    assert result["error"] == "gamma_unresolved_or_ambiguous"

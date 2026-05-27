@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -14,23 +15,13 @@ if str(ROOT) not in sys.path:
 
 from src.runtime.btc5m_live_ledger import LiveLedger
 from src.runtime.env_file import load_env_file
+from src.runtime.btc5m_resolution_source import UnavailableResolutionSource, build_resolution_source
 from src.time_utils import isoformat_utc, utc_now
 
 
 class ResolutionSource(Protocol):
     def resolve(self, lot: dict[str, Any]) -> dict[str, Any]:
         ...
-
-
-class UnavailableResolutionSource:
-    def resolve(self, lot: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "resolved": False,
-            "winning_side": "UNKNOWN",
-            "source": "unresolved_source_unavailable",
-            "error": "unresolved_source_unavailable",
-        }
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Update BTC-5m market resolution state from reliable sources.")
@@ -40,6 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-runtime-sec", type=float, default=0.0)
     parser.add_argument("--interval-sec", type=float, default=30.0)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--resolution-source", choices=["gamma_ctf", "unavailable"], default=os.environ.get("BTC5M_RESOLUTION_SOURCE", "gamma_ctf"))
+    parser.add_argument("--require-onchain-confirmation", dest="require_onchain_confirmation", action="store_true", default=None)
+    parser.add_argument("--no-require-onchain-confirmation", dest="require_onchain_confirmation", action="store_false")
+    parser.add_argument("--allow-unavailable-resolution-source", action="store_true", default=False)
     return parser
 
 
@@ -47,8 +42,16 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.env_file:
         load_env_file(args.env_file, required=True)
+    if args.require_onchain_confirmation is not None:
+        os.environ["BTC5M_RESOLUTION_REQUIRE_ONCHAIN_CONFIRMATION"] = "true" if args.require_onchain_confirmation else "false"
+    os.environ["BTC5M_RESOLUTION_SOURCE"] = args.resolution_source
     ledger = LiveLedger(args.ledger_db)
-    source = UnavailableResolutionSource()
+    try:
+        source = build_resolution_source(env=os.environ, allow_unavailable=args.allow_unavailable_resolution_source)
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc), "resolution_source": args.resolution_source}
+        print(json.dumps(result, indent=2, sort_keys=True, default=str))
+        return 2
     deadline = time.monotonic() + args.max_runtime_sec if args.max_runtime_sec else None
     result: dict[str, Any] = {}
     while True:

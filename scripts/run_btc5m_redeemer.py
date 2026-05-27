@@ -25,11 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--ledger-db", type=Path, default=Path(os.environ.get("BTC5M_LIVE_LEDGER_DB", "state/btc5m_live_ledger.db")))
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--interval-sec", type=float, default=60.0)
+    parser.add_argument("--interval-sec", type=float, default=float(os.environ.get("BTC5M_REDEEMER_INTERVAL_SEC", "60")))
     parser.add_argument("--max-runtime-sec", type=float, default=0.0)
     parser.add_argument("--dry-run", action="store_true", default=False)
-    parser.add_argument("--min-retry-interval-sec", type=float, default=3600.0)
-    parser.add_argument("--max-failures", type=int, default=3)
+    parser.add_argument("--min-retry-interval-sec", type=float, default=float(os.environ.get("BTC5M_REDEEMER_MIN_RETRY_INTERVAL_SEC", "3600")))
+    parser.add_argument("--max-failures", type=int, default=int(os.environ.get("BTC5M_REDEEMER_MAX_FAILURES", "3")))
     parser.add_argument("--yes-i-understand-this-sends-transactions", action="store_true", default=False)
     return parser
 

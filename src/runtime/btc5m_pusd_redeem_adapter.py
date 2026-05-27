@@ -67,8 +67,8 @@ class RedeemConfig:
             ctf_contract_address=source.get("POLY_CTF_CONTRACT_ADDRESS", POLY_CTF_CONTRACT_ADDRESS),
             ctf_collateral_adapter_address=source.get("POLY_CTF_COLLATERAL_ADAPTER_ADDRESS", CTF_COLLATERAL_ADAPTER_ADDRESS),
             pusd_token_address=source.get("PUSD_TOKEN_ADDRESS", PUSD_TOKEN_ADDRESS),
-            wait_timeout_sec=int(source.get("REDEEM_RECEIPT_TIMEOUT_SEC", "120")),
-            poll_latency_sec=int(source.get("REDEEM_RECEIPT_POLL_SEC", "2")),
+            wait_timeout_sec=int(source.get("BTC5M_REDEEMER_RECEIPT_TIMEOUT_SEC", source.get("REDEEM_RECEIPT_TIMEOUT_SEC", "120"))),
+            poll_latency_sec=int(source.get("BTC5M_REDEEMER_RECEIPT_POLL_SEC", source.get("REDEEM_RECEIPT_POLL_SEC", "2"))),
         )
 
     def redacted(self) -> dict[str, Any]:

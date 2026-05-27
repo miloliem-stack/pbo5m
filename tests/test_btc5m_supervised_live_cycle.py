@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from scripts.run_btc5m_supervised_live_cycle import run_supervised_cycle, validate_supervised_env
+from scripts.run_btc5m_supervised_live_cycle import build_supervised_resolution_source, run_supervised_cycle, validate_supervised_env
+from src.runtime.btc5m_resolution_source import GammaCtfResolutionSource, UnavailableResolutionSource
 from src.runtime.btc5m_live_ledger import LiveLedger
 
 
@@ -42,6 +43,10 @@ def _args(tmp_path: Path, **overrides):
         "max_filled_orders": 12,
         "max_redemptions": 12,
         "dry_run_redemptions": True,
+        "allow_unavailable_resolution_source": False,
+        "resolution_source": "gamma_ctf",
+        "redeemer_min_retry_interval_sec": 3600,
+        "redeemer_max_failures": 3,
         "yes_i_understand_this_sends_transactions": False,
     }
     base.update(overrides)
@@ -61,6 +66,32 @@ def test_refuses_continuous_live():
 def test_missing_approval_refuses():
     with pytest.raises(RuntimeError, match="missing_ctf_redeem_adapter_approval"):
         validate_supervised_env(_env(), approval_checker=lambda env: False)
+
+
+def test_supervised_harness_refuses_unavailable_resolution_source_without_allow():
+    with pytest.raises(RuntimeError, match="resolution_source_unavailable"):
+        build_supervised_resolution_source(_args(Path("/tmp"), resolution_source="unavailable"), _env(BTC5M_RESOLUTION_SOURCE="unavailable"))
+
+
+def test_unavailable_resolution_with_real_redemptions_refused():
+    args = _args(Path("/tmp"), resolution_source="unavailable", allow_unavailable_resolution_source=True, dry_run_redemptions=False, yes_i_understand_this_sends_transactions=True)
+    with pytest.raises(RuntimeError, match="unavailable_resolution_source_requires_dry_run_redemptions"):
+        build_supervised_resolution_source(args, _env(BTC5M_RESOLUTION_SOURCE="unavailable"))
+
+
+def test_unavailable_resolution_allowed_only_for_dry_run_redemptions():
+    args = _args(Path("/tmp"), resolution_source="unavailable", allow_unavailable_resolution_source=True, dry_run_redemptions=True)
+    source = build_supervised_resolution_source(args, _env(BTC5M_RESOLUTION_SOURCE="unavailable"))
+    assert isinstance(source, UnavailableResolutionSource)
+
+
+def test_supervised_harness_constructs_gamma_ctf_source(monkeypatch):
+    class FakeSource:
+        pass
+
+    monkeypatch.setattr("scripts.run_btc5m_supervised_live_cycle.build_resolution_source", lambda env, allow_unavailable=False: FakeSource())
+    source = build_supervised_resolution_source(_args(Path("/tmp"), resolution_source="gamma_ctf"), _env())
+    assert isinstance(source, FakeSource)
 
 
 def test_calls_order_reconcile_resolution_redeemer_steps(tmp_path: Path):

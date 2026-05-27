@@ -16,10 +16,10 @@ if str(ROOT) not in sys.path:
 
 from scripts.reconcile_btc5m_ledger_from_execution_journal import reconcile
 from scripts.run_btc5m_redeemer import run_once as run_redeemer_once
-from scripts.update_btc5m_market_resolutions import UnavailableResolutionSource, update_once as update_resolutions_once
+from scripts.update_btc5m_market_resolutions import update_once as update_resolutions_once
 from src.runtime.btc5m_live_ledger import LiveLedger
-from src.runtime.btc5m_pusd_redeem_adapter import PusdCtfRedeemAdapter
 from src.runtime.env_file import load_env_file
+from src.runtime.btc5m_resolution_source import UnavailableResolutionSource, build_resolution_source
 from src.runtime.polymarket_funder_setup import PolymarketFunderConfig, make_web3, read_erc1155_approval, read_erc20_balance
 from src.time_utils import isoformat_utc, utc_now
 
@@ -44,6 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-filled-orders", type=int, default=12)
     parser.add_argument("--max-redemptions", type=int, default=12)
     parser.add_argument("--dry-run-redemptions", action="store_true", default=False)
+    parser.add_argument("--allow-unavailable-resolution-source", action="store_true", default=False)
+    parser.add_argument("--resolution-source", choices=["gamma_ctf", "unavailable"], default=os.environ.get("BTC5M_RESOLUTION_SOURCE", "gamma_ctf"))
+    parser.add_argument("--redeemer-min-retry-interval-sec", type=float, default=float(os.environ.get("BTC5M_REDEEMER_MIN_RETRY_INTERVAL_SEC", "3600")))
+    parser.add_argument("--redeemer-max-failures", type=int, default=int(os.environ.get("BTC5M_REDEEMER_MAX_FAILURES", "3")))
     parser.add_argument("--yes-i-understand-this-sends-transactions", action="store_true", default=False)
     return parser
 
@@ -56,7 +60,8 @@ def main(argv: list[str] | None = None) -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     try:
         validate_supervised_env(os.environ)
-        summary = run_supervised_cycle(args=args, ledger=ledger, log_dir=log_dir)
+        resolution_source = build_supervised_resolution_source(args, os.environ)
+        summary = run_supervised_cycle(args=args, ledger=ledger, log_dir=log_dir, resolution_source=resolution_source)
     except Exception as exc:
         summary = base_summary(args, hard_stop_reason=str(exc))
         write_json(log_dir / "summary.json", summary)
@@ -98,6 +103,18 @@ def validate_supervised_env(env: dict[str, str], *, approval_checker: Callable[[
             raise RuntimeError("missing_ctf_redeem_adapter_approval")
 
 
+def build_supervised_resolution_source(args: argparse.Namespace, env: dict[str, str]) -> Any:
+    source_name = str(args.resolution_source or env.get("BTC5M_RESOLUTION_SOURCE", "gamma_ctf")).strip().lower()
+    if source_name == "unavailable":
+        if not args.allow_unavailable_resolution_source:
+            raise RuntimeError("resolution_source_unavailable")
+        if not args.dry_run_redemptions or args.yes_i_understand_this_sends_transactions:
+            raise RuntimeError("unavailable_resolution_source_requires_dry_run_redemptions")
+        return UnavailableResolutionSource()
+    env["BTC5M_RESOLUTION_SOURCE"] = source_name
+    return build_resolution_source(env=env, allow_unavailable=False)
+
+
 def run_supervised_cycle(
     *,
     args: argparse.Namespace,
@@ -129,6 +146,8 @@ def run_supervised_cycle(
                 dry_run=args.dry_run_redemptions or not args.yes_i_understand_this_sends_transactions,
                 allow_tx=args.yes_i_understand_this_sends_transactions,
                 adapter=redeemer_adapter,
+                min_retry_interval_sec=args.redeemer_min_retry_interval_sec,
+                max_failures=args.redeemer_max_failures,
             )
             append_jsonl(log_dir / "supervised_cycle.jsonl", {"step": "redeemer", "result": redeem})
             last_redeem = now
@@ -202,6 +221,7 @@ def base_summary(args: argparse.Namespace, *, hard_stop_reason: str | None = Non
         "hard_stop_reason": hard_stop_reason,
         "ledger_db": str(args.ledger_db),
         "journal_root": str(args.journal_root),
+        "resolution_source": str(getattr(args, "resolution_source", "gamma_ctf")),
     }
 
 
