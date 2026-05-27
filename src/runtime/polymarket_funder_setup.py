@@ -138,11 +138,46 @@ def require_web3():
     return Web3
 
 
+def _load_poa_middleware() -> Any:
+    candidates = (
+        ("web3.middleware", "ExtraDataToPOAMiddleware"),
+        ("web3.middleware.proof_of_authority", "ExtraDataToPOAMiddleware"),
+        ("web3.middleware", "geth_poa_middleware"),
+    )
+    for module_name, attr_name in candidates:
+        try:
+            module = __import__(module_name, fromlist=[attr_name])
+            return getattr(module, attr_name)
+        except Exception:
+            continue
+    return None
+
+
+def inject_polygon_poa_middleware(web3: Any) -> bool:
+    """Install Web3's Polygon/POA extraData middleware when available."""
+    middleware = _load_poa_middleware()
+    onion = getattr(web3, "middleware_onion", None)
+    if middleware is None or onion is None:
+        return False
+    try:
+        onion.inject(middleware, layer=0)
+        return True
+    except ValueError:
+        # Already installed in some Web3 versions/configurations.
+        return True
+    except TypeError:
+        if hasattr(onion, "add"):
+            onion.add(middleware)
+            return True
+    return False
+
+
 def make_web3(config: PolymarketFunderConfig):
     if not config.polygon_rpc:
         raise RuntimeError("POLYGON_RPC is required for on-chain pUSD setup diagnostics")
     Web3 = require_web3()
     web3 = Web3(Web3.HTTPProvider(config.polygon_rpc))
+    inject_polygon_poa_middleware(web3)
     if hasattr(web3, "is_connected") and not web3.is_connected():
         raise RuntimeError("polygon_rpc_not_connected")
     return web3

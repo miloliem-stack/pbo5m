@@ -7,6 +7,7 @@ import pytest
 
 from src.runtime.btc5m_canary_execution import CanaryExecutor, ExecutionConfig, ExecutionJournal, OrderIntent
 from src.runtime.btc5m_canary_policy import CanaryConfig
+from src.runtime import polymarket_funder_setup as funder_setup
 from src.runtime.polymarket_funder_setup import PolymarketFunderConfig, redact_mapping, to_units, validate_mode
 from scripts import setup_polymarket_funder
 
@@ -45,6 +46,25 @@ def test_eoa_mode_rejects_signature_type_3():
 
 def test_to_units_uses_six_decimals():
     assert to_units("1.2345679") == 1234567
+
+
+def test_polygon_poa_middleware_is_injected(monkeypatch):
+    class Onion:
+        def __init__(self):
+            self.calls = []
+
+        def inject(self, middleware, layer=0):
+            self.calls.append((middleware, layer))
+
+    class FakeWeb3:
+        def __init__(self):
+            self.middleware_onion = Onion()
+
+    fake = FakeWeb3()
+    monkeypatch.setattr(funder_setup, "_load_poa_middleware", lambda: "poa_middleware")
+
+    assert funder_setup.inject_polygon_poa_middleware(fake) is True
+    assert fake.middleware_onion.calls == [("poa_middleware", 0)]
 
 
 def test_runtime_preflight_fails_closed_on_missing_pusd_balance(tmp_path: Path):
