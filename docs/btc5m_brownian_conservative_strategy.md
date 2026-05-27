@@ -305,4 +305,29 @@ Redeemer loop:
   --max-runtime-sec 3600
 ```
 
-The first implementation records and audits redeemable ledger state. Real on-chain redemption fails closed with `redeem_adapter_not_implemented` until the pUSD CTF redeem adapter is explicitly completed and tested. Do not enable continuous trading until the ledger/redeemer path has passed several supervised live cycles.
+Real one-shot redemption:
+
+```bash
+.venv/bin/python scripts/run_btc5m_redeemer.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --once \
+  --yes-i-understand-this-sends-transactions
+```
+
+The redeemer uses the normal pUSD `CtfCollateralAdapter` for BTC up/down binary CTF markets:
+
+- pUSD: `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`
+- CTF: `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045`
+- CtfCollateralAdapter: `0xAdA100Db00Ca00073811820692005400218FcE1f`
+- parent collection id: zero bytes32
+- index sets: `[1, 2]`
+
+The adapter calls:
+
+`redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)`
+
+The ABI selector is pinned in code as `0x01b7037c`; if that ABI check fails, redemption fails closed with `adapter_abi_unverified`.
+
+Redemption requires ledger-confirmed resolution first. The script skips unresolved markets, zero token balances, already submitted/confirmed redemptions, and conditions under retry backoff. It records `redemption_attempts` before sending a transaction, then updates attempts and `redeemed_lots` after the receipt.
+
+Deposit-wallet redemption via relayer is not implemented in this adapter. `POLY_SIGNATURE_TYPE=3` fails closed with `deposit_wallet_redeem_requires_relayer_not_implemented`. Do not enable continuous trading until the ledger/redeemer path has passed several supervised live cycles.

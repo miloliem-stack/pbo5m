@@ -205,7 +205,18 @@ Redeemer loop:
   --max-runtime-sec 3600
 ```
 
+Real one-shot redemption:
+
+```bash
+.venv/bin/python scripts/run_btc5m_redeemer.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --once \
+  --yes-i-understand-this-sends-transactions
+```
+
 Redemption is only available after market resolution. Winning conditional tokens redeem to pUSD at `$1.00` per winning token. Losing tokens produce no payout. There is no redemption deadline, but capital remains trapped until redeemed.
+
+BTC up/down is treated as a normal binary CTF market unless proven otherwise. The redeemer uses `CtfCollateralAdapter.redeemPositions` with zero parent collection id and index sets `[1, 2]`. It records an attempt before transaction submission, waits for a receipt, measures pUSD balance delta when readable, then marks lots redeemed only after a successful receipt.
 
 ## Observe Example
 

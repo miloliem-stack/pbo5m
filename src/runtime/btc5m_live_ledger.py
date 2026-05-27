@@ -310,6 +310,39 @@ class LiveLedger:
             )
             return int(cur.lastrowid)
 
+    def update_redemption_attempt(self, attempt_id: int, *, status: str, tx_hash: Optional[str] = None, error_code: Optional[str] = None, raw_error: Optional[str] = None, confirmed: bool = False) -> None:
+        confirmed_ts = isoformat_utc(utc_now()) if confirmed else None
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE redemption_attempts
+                SET status=?, tx_hash=COALESCE(?, tx_hash), error_code=?, raw_error=?, confirmed_ts=COALESCE(?, confirmed_ts)
+                WHERE id=?
+                """,
+                (status, tx_hash, error_code, raw_error, confirmed_ts, attempt_id),
+            )
+
+    def recent_redemption_failures(self, condition_id: str, *, limit: int = 5) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM redemption_attempts
+                WHERE condition_id=? AND status IN ('failed_retryable', 'failed_terminal')
+                ORDER BY created_ts DESC
+                LIMIT ?
+                """,
+                (condition_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def has_successful_redemption(self, condition_id: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM redemption_attempts WHERE condition_id=? AND status IN ('submitted', 'confirmed') LIMIT 1",
+                (condition_id,),
+            ).fetchone()
+        return row is not None
+
     def mark_lots_redeemed(self, *, condition_id: str, tx_hash: str, redeemed_pusd_amount: Optional[float] = None, receipt: Any = None) -> None:
         now = isoformat_utc(utc_now())
         with self.connect() as conn:
