@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 USDC_E_TOKEN_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 PUSD_TOKEN_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+POLY_CTF_CONTRACT_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+CTF_COLLATERAL_ADAPTER_ADDRESS = "0xAdA100Db00Ca00073811820692005400218FcE1f"
 COLLATERAL_ONRAMP_ADDRESS = "0x93070a847efEf7F70739046A929D47a521F5B8ee"
 COLLATERAL_OFFRAMP_ADDRESS = "0x0000000000000000000000000000000000000000"
 DECIMALS = 6
@@ -53,6 +55,23 @@ ONRAMP_ABI = [
     }
 ]
 
+ERC1155_APPROVAL_ABI = [
+    {
+        "inputs": [{"name": "account", "type": "address"}, {"name": "operator", "type": "address"}],
+        "name": "isApprovedForAll",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "operator", "type": "address"}, {"name": "approved", "type": "bool"}],
+        "name": "setApprovalForAll",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+]
+
 
 @dataclass(frozen=True)
 class PolymarketFunderConfig:
@@ -67,6 +86,8 @@ class PolymarketFunderConfig:
     pusd_token_address: str = PUSD_TOKEN_ADDRESS
     collateral_onramp_address: str = COLLATERAL_ONRAMP_ADDRESS
     collateral_offramp_address: str = COLLATERAL_OFFRAMP_ADDRESS
+    ctf_contract_address: str = POLY_CTF_CONTRACT_ADDRESS
+    ctf_collateral_adapter_address: str = CTF_COLLATERAL_ADAPTER_ADDRESS
     exchange_address: Optional[str] = None
     neg_risk_exchange_address: Optional[str] = None
     relayer_url: Optional[str] = None
@@ -86,6 +107,8 @@ class PolymarketFunderConfig:
             pusd_token_address=source.get("PUSD_TOKEN_ADDRESS", PUSD_TOKEN_ADDRESS),
             collateral_onramp_address=source.get("POLY_COLLATERAL_ONRAMP_ADDRESS", COLLATERAL_ONRAMP_ADDRESS),
             collateral_offramp_address=source.get("POLY_COLLATERAL_OFFRAMP_ADDRESS", COLLATERAL_OFFRAMP_ADDRESS),
+            ctf_contract_address=source.get("POLY_CTF_CONTRACT_ADDRESS", POLY_CTF_CONTRACT_ADDRESS),
+            ctf_collateral_adapter_address=source.get("POLY_CTF_COLLATERAL_ADAPTER_ADDRESS", CTF_COLLATERAL_ADAPTER_ADDRESS),
             exchange_address=source.get("POLY_EXCHANGE_ADDRESS"),
             neg_risk_exchange_address=source.get("POLY_NEG_RISK_EXCHANGE_ADDRESS"),
             relayer_url=source.get("POLY_RELAYER_URL"),
@@ -113,6 +136,8 @@ class PolymarketFunderConfig:
             "pusd_token_address": self.pusd_token_address,
             "collateral_onramp_address": self.collateral_onramp_address,
             "collateral_offramp_address": self.collateral_offramp_address,
+            "ctf_contract_address": self.ctf_contract_address,
+            "ctf_collateral_adapter_address": self.ctf_collateral_adapter_address,
             "exchange_address_set": bool(self.exchange_address),
             "neg_risk_exchange_address_set": bool(self.neg_risk_exchange_address),
             "relayer_url_set": bool(self.relayer_url),
@@ -197,6 +222,10 @@ def onramp_contract(web3: Any, address: str):
     return web3.eth.contract(address=checksum(web3, address), abi=ONRAMP_ABI)
 
 
+def erc1155_contract(web3: Any, address: str):
+    return web3.eth.contract(address=checksum(web3, address), abi=ERC1155_APPROVAL_ABI)
+
+
 def read_erc20_balance(web3: Any, token: str, owner: Optional[str]) -> Optional[int]:
     if not owner:
         return None
@@ -207,6 +236,12 @@ def read_erc20_allowance(web3: Any, token: str, owner: Optional[str], spender: O
     if not owner or not spender:
         return None
     return int(erc20_contract(web3, token).functions.allowance(checksum(web3, owner), checksum(web3, spender)).call())
+
+
+def read_erc1155_approval(web3: Any, token: str, owner: Optional[str], operator: Optional[str]) -> Optional[bool]:
+    if not owner or not operator:
+        return None
+    return bool(erc1155_contract(web3, token).functions.isApprovedForAll(checksum(web3, owner), checksum(web3, operator)).call())
 
 
 def validate_mode(config: PolymarketFunderConfig, *, deposit_wallet_mode: bool = False, eoa_mode: bool = False) -> list[str]:
@@ -246,6 +281,14 @@ def diagnose_funder(config: PolymarketFunderConfig, *, clob_adapter: Any = None,
                     if config.neg_risk_exchange_address
                     else None
                 ),
+                "ctf_contract_address": config.ctf_contract_address,
+                "ctf_collateral_adapter_address": config.ctf_collateral_adapter_address,
+                "ctf_redeem_adapter_approved": read_erc1155_approval(
+                    web3,
+                    config.ctf_contract_address,
+                    config.effective_funder,
+                    config.ctf_collateral_adapter_address,
+                ),
             }
         )
     except Exception as exc:
@@ -283,6 +326,14 @@ def wrap_usdce_to_pusd(web3: Any, config: PolymarketFunderConfig, *, recipient: 
         checksum(web3, config.usdc_e_token_address),
         checksum(web3, recipient),
         int(amount_units),
+    )
+    return send_contract_tx(web3, config, fn)
+
+
+def approve_ctf_redeem_adapter(web3: Any, config: PolymarketFunderConfig) -> str:
+    fn = erc1155_contract(web3, config.ctf_contract_address).functions.setApprovalForAll(
+        checksum(web3, config.ctf_collateral_adapter_address),
+        True,
     )
     return send_contract_tx(web3, config, fn)
 

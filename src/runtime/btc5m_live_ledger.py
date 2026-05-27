@@ -266,6 +266,17 @@ class LiveLedger:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def open_outcome_lots(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM outcome_lots WHERE status IN ('open', 'resolved_win')").fetchall()
+        return [dict(row) for row in rows]
+
+    def count_rows(self, table: str) -> int:
+        if table not in {"live_orders", "live_fills", "outcome_lots", "market_resolution_state", "redemption_attempts", "redeemed_lots"}:
+            raise ValueError("unsupported table")
+        with self.connect() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
     def terminalize_resolved_lots(self) -> None:
         now = isoformat_utc(utc_now())
         with self.connect() as conn:

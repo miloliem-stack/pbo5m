@@ -15,9 +15,11 @@ from src.runtime.btc5m_canary_execution import PyClobClientAdapter  # noqa: E402
 from src.runtime.env_file import load_env_file  # noqa: E402
 from src.runtime.polymarket_funder_setup import (  # noqa: E402
     PolymarketFunderConfig,
+    approve_ctf_redeem_adapter,
     approve_erc20,
     diagnose_funder,
     make_web3,
+    read_erc1155_approval,
     to_units,
     update_clob_collateral_allowance,
     validate_mode,
@@ -34,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--approve-onramp", type=str, metavar="AMOUNT")
     parser.add_argument("--sync-clob-collateral-allowance", action="store_true")
     parser.add_argument("--approve-trading-collateral", action="store_true")
+    parser.add_argument("--approve-ctf-redeem-adapter", action="store_true")
+    parser.add_argument("--check-ctf-redeem-adapter-approval", action="store_true")
     parser.add_argument("--deposit-wallet-mode", action="store_true")
     parser.add_argument("--eoa-mode", action="store_true")
     parser.add_argument("--yes-i-understand-this-sends-transactions", action="store_true")
@@ -50,7 +54,26 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "errors": errors, "config": config.redacted()}, indent=2, sort_keys=True))
         return 2
     adapter = maybe_adapter()
-    mutation_requested = bool(args.wrap_usdce or args.approve_onramp or args.sync_clob_collateral_allowance or args.approve_trading_collateral)
+    mutation_requested = bool(
+        args.wrap_usdce
+        or args.approve_onramp
+        or args.sync_clob_collateral_allowance
+        or args.approve_trading_collateral
+        or args.approve_ctf_redeem_adapter
+    )
+    if args.deposit_wallet_mode and args.approve_ctf_redeem_adapter:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "errors": ["deposit_wallet_ctf_approval_requires_relayer"],
+                    "config": config.redacted(),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 2
     if args.deposit_wallet_mode and mutation_requested:
         print(
             json.dumps(
@@ -97,11 +120,39 @@ def main(argv: list[str] | None = None) -> int:
                 amount_units=to_units("1000000000"),
             )
             events.append({"event_type": "approve_trading_collateral_submitted", "tx_hash": tx, "spender": config.exchange_address})
+        if args.approve_ctf_redeem_adapter:
+            if args.deposit_wallet_mode or config.signature_type == 3:
+                raise SystemExit("deposit_wallet_ctf_approval_requires_relayer")
+            tx = approve_ctf_redeem_adapter(web3, config)
+            events.append(
+                {
+                    "event_type": "approve_ctf_redeem_adapter_submitted",
+                    "tx_hash": tx,
+                    "operator": config.ctf_collateral_adapter_address,
+                    "ctf_contract_address": config.ctf_contract_address,
+                }
+            )
         if args.sync_clob_collateral_allowance:
             if adapter is None:
                 raise SystemExit("CLOB adapter unavailable for update_balance_allowance")
             response = update_clob_collateral_allowance(adapter)
             events.append({"event_type": "sync_clob_collateral_allowance", "response": response})
+    if args.check_ctf_redeem_adapter_approval:
+        web3 = make_web3(config)
+        events.append(
+            {
+                "event_type": "check_ctf_redeem_adapter_approval",
+                "ctf_redeem_adapter_approved": read_erc1155_approval(
+                    web3,
+                    config.ctf_contract_address,
+                    config.effective_funder,
+                    config.ctf_collateral_adapter_address,
+                ),
+                "funder_address": config.effective_funder,
+                "ctf_contract_address": config.ctf_contract_address,
+                "ctf_collateral_adapter_address": config.ctf_collateral_adapter_address,
+            }
+        )
     out = {"ok": not diagnostic.get("errors"), "diagnostic": diagnostic, "events": events}
     write_setup_log(args.setup_log, {"config": config.redacted(), **out})
     print(json.dumps(out, indent=2, sort_keys=True, default=str))

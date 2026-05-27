@@ -296,6 +296,27 @@ Redeemer dry-run:
   --dry-run
 ```
 
+Check CTF redeem adapter approval:
+
+```bash
+.venv/bin/python scripts/setup_polymarket_funder.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --eoa-mode \
+  --check-ctf-redeem-adapter-approval
+```
+
+Approve the CTF redeem adapter in EOA mode:
+
+```bash
+.venv/bin/python scripts/setup_polymarket_funder.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --eoa-mode \
+  --approve-ctf-redeem-adapter \
+  --yes-i-understand-this-sends-transactions
+```
+
+Deposit-wallet/proxy mode requires a relayer wallet-batch approval path. The setup script refuses direct EOA-style CTF approval with `deposit_wallet_ctf_approval_requires_relayer`.
+
 Redeemer loop:
 
 ```bash
@@ -329,5 +350,20 @@ The adapter calls:
 The ABI selector is pinned in code as `0x01b7037c`; if that ABI check fails, redemption fails closed with `adapter_abi_unverified`.
 
 Redemption requires ledger-confirmed resolution first. The script skips unresolved markets, zero token balances, already submitted/confirmed redemptions, and conditions under retry backoff. It records `redemption_attempts` before sending a transaction, then updates attempts and `redeemed_lots` after the receipt.
+
+After successful redemption, verify the ledger:
+
+```bash
+sqlite3 state/btc5m_live_ledger.db \
+  "select id, condition_id, status, tx_hash, confirmed_ts from redemption_attempts order by id desc limit 5;"
+
+sqlite3 state/btc5m_live_ledger.db \
+  "select condition_id, side, remaining_qty, status from outcome_lots order by id desc limit 10;"
+
+sqlite3 state/btc5m_live_ledger.db \
+  "select condition_id, tx_hash, redeemed_pusd_amount, created_ts from redeemed_lots order by id desc limit 5;"
+```
+
+Do not delete failed attempts; they are audit history.
 
 Deposit-wallet redemption via relayer is not implemented in this adapter. `POLY_SIGNATURE_TYPE=3` fails closed with `deposit_wallet_redeem_requires_relayer_not_implemented`. Do not enable continuous trading until the ledger/redeemer path has passed several supervised live cycles.

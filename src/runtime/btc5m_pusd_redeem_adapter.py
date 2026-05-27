@@ -11,6 +11,7 @@ from .polymarket_funder_setup import (
     checksum,
     from_units,
     make_web3,
+    read_erc1155_approval,
     read_erc20_balance,
 )
 
@@ -97,6 +98,8 @@ class PusdCtfRedeemAdapter:
         if not self.funder_config.owner_private_key:
             raise RuntimeError("POLY_WALLET_PRIVATE_KEY is required for redemption")
         owner = self._owner_address()
+        if self.read_ctf_redeem_adapter_approval(owner) is not True:
+            raise RuntimeError("missing_ctf_redeem_adapter_approval")
         balances = self.read_outcome_balances(owner, token_ids)
         if sum(balances.values()) <= 0:
             raise RuntimeError("zero_token_balance")
@@ -136,6 +139,16 @@ class PusdCtfRedeemAdapter:
             raw = int(contract.functions.balanceOf(checksum(self.web3, owner), int(token_id)).call())
             out[str(token_id)] = float(Decimal(raw) / Decimal(10**DECIMALS))
         return out
+
+    def read_ctf_redeem_adapter_approval(self, owner: str) -> bool:
+        return bool(
+            read_erc1155_approval(
+                self.web3,
+                self.redeem_config.ctf_contract_address,
+                owner,
+                self.redeem_config.ctf_collateral_adapter_address,
+            )
+        )
 
     def build_redeem_function(self, *, condition_id: str, index_sets: Optional[list[int]] = None) -> Any:
         adapter = self.web3.eth.contract(address=checksum(self.web3, self.redeem_config.ctf_collateral_adapter_address), abi=CTF_COLLATERAL_ADAPTER_ABI)

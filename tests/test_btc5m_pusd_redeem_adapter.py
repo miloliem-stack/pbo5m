@@ -10,6 +10,7 @@ from src.runtime.btc5m_live_ledger import LiveLedger
 from src.runtime.btc5m_pusd_redeem_adapter import (
     PusdCtfRedeemAdapter,
     REDEEM_POSITIONS_SELECTOR,
+    RedeemConfig,
     condition_id_to_bytes32,
     verify_adapter_abi,
 )
@@ -125,6 +126,52 @@ def test_zero_token_balance_skipped_as_terminal(tmp_path: Path):
     with ledger.connect() as conn:
         status = conn.execute("SELECT status FROM redemption_attempts").fetchone()[0]
     assert status == "failed_terminal"
+
+
+def test_missing_ctf_approval_causes_preflight_failure_before_tx_send(tmp_path: Path):
+    ledger = _ledger_with_redeemable(tmp_path)
+    adapter = FakeRedeemAdapter(error="missing_ctf_redeem_adapter_approval")
+
+    result = run_once(ledger, config=PolymarketFunderConfig(), dry_run=False, allow_tx=True, adapter=adapter)
+
+    assert result["events"][0]["error_code"] == "missing_ctf_redeem_adapter_approval"
+    with ledger.connect() as conn:
+        status = conn.execute("SELECT status FROM redemption_attempts").fetchone()[0]
+    assert status == "failed_retryable"
+
+
+def test_adapter_approval_false_fails_before_tx(monkeypatch):
+    adapter = object.__new__(PusdCtfRedeemAdapter)
+    adapter.funder_config = PolymarketFunderConfig(owner_private_key="0xkey")
+    adapter.redeem_config = RedeemConfig()
+    adapter.web3 = object()
+    adapter._owner_address = lambda: "0xOwner"  # type: ignore[method-assign]
+    adapter.read_ctf_redeem_adapter_approval = lambda owner: False  # type: ignore[method-assign]
+    adapter.read_outcome_balances = lambda owner, token_ids: {"123": 1.0}  # type: ignore[method-assign]
+    adapter._send_redeem_tx = lambda **kwargs: (_ for _ in ()).throw(AssertionError("tx must not be sent"))  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="missing_ctf_redeem_adapter_approval"):
+        adapter.redeem_condition(condition_id=CONDITION, token_ids=["123"])
+
+
+def test_deposit_wallet_mode_still_refuses():
+    adapter = object.__new__(PusdCtfRedeemAdapter)
+    adapter.funder_config = PolymarketFunderConfig(signature_type=3, owner_private_key="0xkey", funder="0xFunder")
+    adapter.redeem_config = RedeemConfig()
+    adapter.web3 = object()
+
+    with pytest.raises(RuntimeError, match="deposit_wallet_redeem_requires_relayer_not_implemented"):
+        adapter.redeem_condition(condition_id=CONDITION, token_ids=["123"])
+
+
+def test_approved_ctf_adapter_allows_redeem_path_to_proceed(tmp_path: Path):
+    ledger = _ledger_with_redeemable(tmp_path)
+    adapter = FakeRedeemAdapter()
+
+    result = run_once(ledger, config=PolymarketFunderConfig(), dry_run=False, allow_tx=True, adapter=adapter)
+
+    assert result["events"][0]["status"] == "confirmed"
+    assert len(adapter.calls) == 1
 
 
 def test_unresolved_condition_is_skipped(tmp_path: Path):

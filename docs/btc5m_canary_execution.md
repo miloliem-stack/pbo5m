@@ -196,6 +196,23 @@ Redeemer dry-run:
   --dry-run
 ```
 
+Check and approve the CTF redeem adapter:
+
+```bash
+.venv/bin/python scripts/setup_polymarket_funder.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --eoa-mode \
+  --check-ctf-redeem-adapter-approval
+
+.venv/bin/python scripts/setup_polymarket_funder.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --eoa-mode \
+  --approve-ctf-redeem-adapter \
+  --yes-i-understand-this-sends-transactions
+```
+
+The redeemer checks `ConditionalTokens.isApprovedForAll(funder, CtfCollateralAdapter)` before building a redeem transaction. If missing, it fails closed with `missing_ctf_redeem_adapter_approval` instead of letting the transaction revert with an ERC1155 operator approval error.
+
 Redeemer loop:
 
 ```bash
@@ -217,6 +234,21 @@ Real one-shot redemption:
 Redemption is only available after market resolution. Winning conditional tokens redeem to pUSD at `$1.00` per winning token. Losing tokens produce no payout. There is no redemption deadline, but capital remains trapped until redeemed.
 
 BTC up/down is treated as a normal binary CTF market unless proven otherwise. The redeemer uses `CtfCollateralAdapter.redeemPositions` with zero parent collection id and index sets `[1, 2]`. It records an attempt before transaction submission, waits for a receipt, measures pUSD balance delta when readable, then marks lots redeemed only after a successful receipt.
+
+Ledger confirmation after redemption:
+
+```bash
+sqlite3 state/btc5m_live_ledger.db \
+  "select id, condition_id, status, tx_hash, confirmed_ts from redemption_attempts order by id desc limit 5;"
+
+sqlite3 state/btc5m_live_ledger.db \
+  "select condition_id, side, remaining_qty, status from outcome_lots order by id desc limit 10;"
+
+sqlite3 state/btc5m_live_ledger.db \
+  "select condition_id, tx_hash, redeemed_pusd_amount, created_ts from redeemed_lots order by id desc limit 5;"
+```
+
+Failed redemption attempts should remain in the DB as audit history.
 
 ## Observe Example
 

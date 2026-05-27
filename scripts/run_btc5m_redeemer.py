@@ -173,6 +173,8 @@ def normalize_redeem_error(exc: BaseException) -> str:
         return "condition_id_invalid"
     if "zero_token_balance" in lowered:
         return "zero_token_balance"
+    if "missing_ctf_redeem_adapter_approval" in lowered or "need operator approval" in lowered:
+        return "missing_ctf_redeem_adapter_approval"
     if "receipt" in lowered or "timeout" in lowered:
         return "redeem_receipt_timeout"
     return "redeem_tx_failed"

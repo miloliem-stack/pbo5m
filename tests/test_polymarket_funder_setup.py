@@ -29,6 +29,18 @@ def test_setup_diagnose_mode_does_not_send_txs(monkeypatch, tmp_path: Path):
     assert calls["diagnose"] == 1
 
 
+def test_diagnose_includes_ctf_redeem_adapter_approval(monkeypatch):
+    monkeypatch.setattr(funder_setup, "make_web3", lambda config: object())
+    monkeypatch.setattr(funder_setup, "read_erc20_balance", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(funder_setup, "read_erc20_allowance", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(funder_setup, "read_erc1155_approval", lambda *args, **kwargs: True)
+
+    row = funder_setup.diagnose_funder(PolymarketFunderConfig(owner_address="0xOwner"))
+
+    assert row["ctf_redeem_adapter_approved"] is True
+    assert row["ctf_contract_address"] == "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+
+
 def test_mutation_flags_require_confirmation(tmp_path: Path):
     env_file = tmp_path / ".env"
     env_file.write_text("POLY_SIGNATURE_TYPE=0\nPOLY_WALLET_ADDRESS=0xOwner\n", encoding="utf-8")
@@ -103,6 +115,78 @@ def test_update_clob_collateral_allowance_uses_v2_params(monkeypatch):
     assert response == {"ok": True}
     assert captured["params"].asset_type == "COLLATERAL"
     assert captured["params"].signature_type == "EOA"
+
+
+def test_setup_eoa_ctf_approval_builds_set_approval_for_all(monkeypatch, tmp_path: Path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("POLY_SIGNATURE_TYPE=0\nPOLY_WALLET_ADDRESS=0xOwner\n", encoding="utf-8")
+    calls = {}
+
+    monkeypatch.setattr(setup_polymarket_funder, "maybe_adapter", lambda: None)
+    monkeypatch.setattr(setup_polymarket_funder, "diagnose_funder", lambda config, clob_adapter=None: {"errors": [], "config": config.redacted()})
+    monkeypatch.setattr(setup_polymarket_funder, "make_web3", lambda config: object())
+
+    def fake_approve(web3, config):
+        calls["operator"] = config.ctf_collateral_adapter_address
+        calls["ctf"] = config.ctf_contract_address
+        return "0xtx"
+
+    monkeypatch.setattr(setup_polymarket_funder, "approve_ctf_redeem_adapter", fake_approve)
+
+    rc = setup_polymarket_funder.main(
+        [
+            "--env-file",
+            str(env_file),
+            "--eoa-mode",
+            "--approve-ctf-redeem-adapter",
+            "--yes-i-understand-this-sends-transactions",
+            "--setup-log",
+            str(tmp_path / "setup.jsonl"),
+        ]
+    )
+
+    assert rc == 0
+    assert calls["operator"] == "0xAdA100Db00Ca00073811820692005400218FcE1f"
+
+
+def test_setup_deposit_wallet_ctf_approval_refuses(tmp_path: Path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("POLY_SIGNATURE_TYPE=3\nPOLY_FUNDER=0xFunder\nPOLY_WALLET_ADDRESS=0xOwner\n", encoding="utf-8")
+
+    rc = setup_polymarket_funder.main(
+        [
+            "--env-file",
+            str(env_file),
+            "--deposit-wallet-mode",
+            "--approve-ctf-redeem-adapter",
+            "--yes-i-understand-this-sends-transactions",
+        ]
+    )
+
+    assert rc == 2
+
+
+def test_setup_check_ctf_redeem_adapter_approval(monkeypatch, tmp_path: Path):
+    env_file = tmp_path / ".env"
+    env_file.write_text("POLY_SIGNATURE_TYPE=0\nPOLY_WALLET_ADDRESS=0xOwner\n", encoding="utf-8")
+
+    monkeypatch.setattr(setup_polymarket_funder, "maybe_adapter", lambda: None)
+    monkeypatch.setattr(setup_polymarket_funder, "diagnose_funder", lambda config, clob_adapter=None: {"errors": [], "config": config.redacted()})
+    monkeypatch.setattr(setup_polymarket_funder, "make_web3", lambda config: object())
+    monkeypatch.setattr(setup_polymarket_funder, "read_erc1155_approval", lambda web3, token, owner, operator: True)
+
+    rc = setup_polymarket_funder.main(
+        [
+            "--env-file",
+            str(env_file),
+            "--check-ctf-redeem-adapter-approval",
+            "--setup-log",
+            str(tmp_path / "setup.jsonl"),
+        ]
+    )
+
+    assert rc == 0
+    assert "ctf_redeem_adapter_approved" in (tmp_path / "setup.jsonl").read_text(encoding="utf-8")
 
 
 def test_runtime_preflight_fails_closed_on_missing_pusd_balance(tmp_path: Path):
