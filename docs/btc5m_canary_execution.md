@@ -178,6 +178,35 @@ Operator sequence:
 5. Run a paper smoke test.
 6. Run one supervised live canary.
 
+## Live Ledger And Redeemer
+
+The first successful live Brownian canary order confirmed the FAK BUY path can reach the venue. The next safety layer is persistent inventory accounting:
+
+- JSONL execution events remain the append-only audit trail.
+- `state/btc5m_live_ledger.db` is the canonical SQLite state for live orders, fills, outcome lots, resolution state, redemption attempts, and redeemed lots.
+- The live order path records orders/fills but never calls redemption inline.
+- The preflight path reads pUSD balance and ledger reservations; if pUSD is low but unredeemed winning lots are known, trading skips with `insufficient_pusd_unredeemed_winners_pending`.
+
+Redeemer dry-run:
+
+```bash
+.venv/bin/python scripts/run_btc5m_redeemer.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --once \
+  --dry-run
+```
+
+Redeemer loop:
+
+```bash
+.venv/bin/python scripts/run_btc5m_redeemer.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --interval-sec 60 \
+  --max-runtime-sec 3600
+```
+
+Redemption is only available after market resolution. Winning conditional tokens redeem to pUSD at `$1.00` per winning token. Losing tokens produce no payout. There is no redemption deadline, but capital remains trapped until redeemed.
+
 ## Observe Example
 
 Autonomous observe mode from live market discovery, live quotes, the configured Brownian source, and the configured HMM state source:

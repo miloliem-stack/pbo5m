@@ -112,12 +112,13 @@ def execute_brownian_request_with_canary_route(executor: CanaryExecutor, request
         event = executor._event("execution_error", intent=intent, raw_error_reason="missing_clob_adapter")
         executor.journal.write(event)
         return event
-    if hasattr(executor.adapter, "preflight_order"):
-        preflight = executor.adapter.preflight_order(intent)  # type: ignore[attr-defined]
-        if preflight is not None:
-            event = executor._event("execution_skipped", intent=intent, **preflight)
-            executor.journal.write(event)
-            return event
+    preflight = executor._preflight_order(intent)
+    if preflight is not None:
+        event = executor._event("execution_skipped", intent=intent, **preflight)
+        executor.journal.write(event)
+        return event
+    if executor.ledger is not None:
+        executor.ledger.record_order_intent(intent)
     executor.order_attempts += 1
     try:
         submitted = executor.adapter.submit_buy(intent)
@@ -126,8 +127,12 @@ def execute_brownian_request_with_canary_route(executor: CanaryExecutor, request
         event_type = "execution_rejected_by_venue" if normalized["terminal"] else "execution_error_after_submit"
         event = executor._event(event_type, intent=intent, **normalized)
         executor.journal.write(event)
+        if executor.ledger is not None:
+            executor.ledger.record_order_event(event)
         return event
     order_id = extract_order_id(submitted)
+    if executor.ledger is not None:
+        executor.ledger.record_order_submission(intent, order_id=order_id, response=submitted)
     executor.journal.write(
         executor._event(
             "live_order_submitted",

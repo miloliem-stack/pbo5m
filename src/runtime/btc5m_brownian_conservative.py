@@ -40,6 +40,9 @@ class BrownianConservativeConfig:
     small_wallet_threshold: float = 2000.0
     small_wallet_max_stake_fraction: float = 0.0025
     min_order_notional: float = 5.0
+    min_market_buy_notional_usd: float = 5.0
+    min_limit_buy_size_shares: Optional[float] = None
+    venue_min_discovery_mode: str = "static"
     skip_below_min_order: bool = True
     one_entry_per_market: bool = True
     daily_stop_loss_fraction: float = 0.03
@@ -54,6 +57,13 @@ class BrownianConservativeConfig:
         strategy_id = source.get("BTC5M_STRATEGY_ID", STRATEGY_ID)
         if strategy_id != STRATEGY_ID:
             raise ValueError(f"unsupported BTC5M_STRATEGY_ID={strategy_id!r}")
+        normal_max_stake_fraction = float(source.get("BTC5M_BROWNIAN_MAX_STAKE_FRACTION", "0.0025"))
+        min_market_buy_notional = float(
+            source.get("BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD", source.get("BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL", "5"))
+        )
+        small_wallet_threshold = min_market_buy_notional / normal_max_stake_fraction if normal_max_stake_fraction > 0 else float("inf")
+        if "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD" not in source and "BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD" in source:
+            small_wallet_threshold = float(source["BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD"])
         return cls(
             strategy_id=strategy_id,
             enabled=_env_bool(source.get("BTC5M_BROWNIAN_ENABLED", "false")),
@@ -66,11 +76,14 @@ class BrownianConservativeConfig:
             probability_haircut_abs=float(source.get("BTC5M_BROWNIAN_PROBABILITY_HAIRCUT_ABS", "0.02")),
             ask_slippage_abs=float(source.get("BTC5M_BROWNIAN_ASK_SLIPPAGE_ABS", "0.01")),
             kelly_multiplier=float(source.get("BTC5M_BROWNIAN_KELLY_MULTIPLIER", str(1.0 / 40.0))),
-            normal_max_stake_fraction=float(source.get("BTC5M_BROWNIAN_MAX_STAKE_FRACTION", "0.0025")),
+            normal_max_stake_fraction=normal_max_stake_fraction,
             max_depth_utilization=float(source.get("BTC5M_BROWNIAN_MAX_DEPTH_UTILIZATION", "1.0")),
-            small_wallet_threshold=float(source.get("BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD", "2000")),
+            small_wallet_threshold=small_wallet_threshold,
             small_wallet_max_stake_fraction=float(source.get("BTC5M_BROWNIAN_SMALL_WALLET_MAX_STAKE_FRACTION", source.get("BTC5M_BROWNIAN_MAX_STAKE_FRACTION", "0.0025"))),
-            min_order_notional=float(source.get("BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL", "5")),
+            min_order_notional=min_market_buy_notional,
+            min_market_buy_notional_usd=min_market_buy_notional,
+            min_limit_buy_size_shares=_float(source.get("BTC5M_BROWNIAN_MIN_LIMIT_BUY_SIZE_SHARES")),
+            venue_min_discovery_mode=source.get("BTC5M_BROWNIAN_VENUE_MIN_DISCOVERY_MODE", "static"),
             top_n_levels=int(source.get("BTC5M_BROWNIAN_TOP_N_LEVELS", "10")),
             max_decision_staleness_seconds=float(source.get("BTC5M_BROWNIAN_MAX_DECISION_STALENESS_SECONDS", "3.0")),
             decision_log_path=Path(source.get("BTC5M_BROWNIAN_DECISION_LOG", str(DECISION_LOG))),

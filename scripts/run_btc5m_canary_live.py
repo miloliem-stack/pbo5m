@@ -29,6 +29,7 @@ from src.runtime.btc5m_canary_policy import evaluate_canary_policy
 from src.runtime.btc5m_brownian_conservative import STRATEGY_ID as BROWNIAN_STRATEGY_ID
 from src.runtime.btc5m_brownian_conservative import BrownianConservativeConfig, validate_brownian_runtime_env
 from src.runtime.btc5m_live_input_builder import BTC5MCanaryLiveInputBuilder, LiveInputBuilderConfig
+from src.runtime.btc5m_live_ledger import LiveLedger
 from src.runtime.btc5m_strategy_router import execute_brownian_request_with_canary_route, run_btc5m_strategy_cycle, selected_strategy_id
 from src.time_utils import utc_now
 from scripts.run_btc5m_live_state_producer import load_json as load_state_json
@@ -193,7 +194,8 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
         adapter = PyClobClientAdapter() if exec_config.execution_mode == "live" else None
         journal = ExecutionJournal(exec_config.journal_root)
         journal.ensure_writable()
-        executor = CanaryExecutor(exec_config, adapter, journal)
+        ledger = LiveLedger(exec_config.ledger_path)
+        executor = CanaryExecutor(exec_config, adapter, journal, ledger=ledger)
         execution_callback = lambda request: execute_brownian_request_with_canary_route(executor, request)
     deadline = time.monotonic() + float(args.max_runtime_sec)
     result: dict[str, Any] = {"status": "no_decision_before_timeout", "strategy_id": BROWNIAN_STRATEGY_ID}

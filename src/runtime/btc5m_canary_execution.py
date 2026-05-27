@@ -15,6 +15,7 @@ from typing import Any, Optional, Protocol
 
 from ..time_utils import isoformat_utc, parse_datetime, utc_now
 from .btc5m_canary_policy import POLICY_ID, CanaryConfig
+from .btc5m_live_ledger import LiveLedger
 from .polymarket_funder_setup import PolymarketFunderConfig, from_units, make_web3, read_erc20_allowance, read_erc20_balance
 
 
@@ -54,6 +55,7 @@ class ExecutionConfig:
     decision_expiry_ms: int = 2000
     allow_reentry_after_reject: bool = False
     journal_root: Path = Path("artifacts/btc5m_canary_execution")
+    ledger_path: Path = Path("state/btc5m_live_ledger.db")
     policy_config: CanaryConfig = CanaryConfig(min_edge=0.0, canary_stake_usd=1.0)
 
     @classmethod
@@ -82,6 +84,7 @@ class ExecutionConfig:
             decision_expiry_ms=int(source.get("BTC5M_DECISION_EXPIRY_MS", "2000")),
             allow_reentry_after_reject=_env_bool(source.get("BTC5M_ALLOW_REENTRY_AFTER_REJECT", "false")),
             journal_root=Path(source.get("BTC5M_EXECUTION_JOURNAL_ROOT", "artifacts/btc5m_canary_execution")),
+            ledger_path=Path(source.get("BTC5M_LIVE_LEDGER_DB", "state/btc5m_live_ledger.db")),
             policy_config=policy_config,
         )
 
@@ -266,6 +269,21 @@ class PyClobClientAdapter:
             return {"skip_reason": "pusd_preflight_unavailable", "raw_error_reason": str(exc)}
         return None
 
+    def capital_state(self) -> dict[str, Any]:
+        web3 = make_web3(self.funder_config)
+        funder = self.adapter_config.get("funder")
+        balance = read_erc20_balance(web3, self.funder_config.pusd_token_address, funder)
+        state = {
+            "funder": funder,
+            "pusd_balance": from_units(balance or 0),
+            "allowance_spender": self.funder_config.exchange_address,
+            "pusd_allowance": None,
+        }
+        if self.funder_config.exchange_address:
+            allowance = read_erc20_allowance(web3, self.funder_config.pusd_token_address, funder, self.funder_config.exchange_address)
+            state["pusd_allowance"] = from_units(allowance or 0)
+        return state
+
     def _preflight_allowance(self, web3: Any, funder: Optional[str], required_units: int) -> Optional[dict[str, Any]]:
         exchange = self.funder_config.exchange_address
         if exchange:
@@ -343,12 +361,14 @@ class CanaryExecutor:
         *,
         now_fn=utc_now,
         sleep_fn=time.sleep,
+        ledger: Optional[LiveLedger] = None,
     ) -> None:
         self.config = config
         self.adapter = adapter
         self.journal = journal
         self.now_fn = now_fn
         self.sleep_fn = sleep_fn
+        self.ledger = ledger
         self.order_attempts = 0
 
     def startup_check(self) -> dict[str, Any]:
@@ -392,6 +412,12 @@ class CanaryExecutor:
             self.journal.ensure_writable()
         except Exception as exc:
             errors.append(f"journal_not_writable:{exc}")
+        if self.config.execution_mode == "live":
+            try:
+                if self.ledger is not None:
+                    self.ledger.ensure_schema()
+            except Exception as exc:
+                errors.append(f"ledger_not_writable:{exc}")
         event["startup_ok"] = not errors
         event["startup_errors"] = errors
         self.journal.write(event)
@@ -431,6 +457,8 @@ class CanaryExecutor:
             event = self._event("execution_skipped", intent=intent, **preflight)
             self.journal.write(event)
             return event
+        if self.ledger is not None:
+            self.ledger.record_order_intent(intent)
         self.order_attempts += 1
         try:
             submitted = self.adapter.submit_buy(intent)
@@ -439,8 +467,12 @@ class CanaryExecutor:
             event_type = "execution_rejected_by_venue" if normalized["terminal"] else "execution_error_after_submit"
             event = self._event(event_type, intent=intent, **normalized)
             self.journal.write(event)
+            if self.ledger is not None:
+                self.ledger.record_order_event(event)
             return event
         order_id = extract_order_id(submitted)
+        if self.ledger is not None:
+            self.ledger.record_order_submission(intent, order_id=order_id, response=submitted)
         submitted_event = self._event("live_order_submitted", intent=intent, order_id=order_id, clob_status=extract_status(submitted), raw_response=submitted)
         self.journal.write(submitted_event)
         final_event = self.poll_order(intent, order_id)
@@ -470,6 +502,8 @@ class CanaryExecutor:
                 raw_response=status,
             )
             self.journal.write(event)
+            if self.ledger is not None:
+                self.ledger.record_order_event(event)
             last_event = event
             if event_type in {"order_filled", "order_partially_filled", "order_rejected", "order_cancelled"}:
                 return event
@@ -484,6 +518,23 @@ class CanaryExecutor:
         return os.getenv("POLY_WALLET_ADDRESS")
 
     def _preflight_order(self, intent: OrderIntent) -> Optional[dict[str, Any]]:
+        if self.ledger is not None and self.adapter is not None and hasattr(self.adapter, "capital_state"):
+            try:
+                capital = self.adapter.capital_state()  # type: ignore[attr-defined]
+                reserved = self.ledger.open_reserved_pusd()
+                unredeemed = self.ledger.unredeemed_winning_estimate()
+                available = float(capital.get("pusd_balance") or 0.0) - float(reserved or 0.0)
+                if available + 1e-9 < float(intent.stake_usd):
+                    reason = "insufficient_pusd_unredeemed_winners_pending" if unredeemed > 0 else "insufficient_pusd_balance"
+                    return {
+                        "skip_reason": reason,
+                        "pusd_balance": capital.get("pusd_balance"),
+                        "reserved_pusd": reserved,
+                        "known_unredeemed_winning_tokens": unredeemed,
+                        "available_trade_bankroll": available,
+                    }
+            except Exception as exc:
+                return {"skip_reason": "capital_preflight_unavailable", "raw_error_reason": str(exc)}
         if self.adapter is not None and hasattr(self.adapter, "preflight_order"):
             return self.adapter.preflight_order(intent)  # type: ignore[attr-defined]
         return None
@@ -856,6 +907,10 @@ def normalize_clob_error(exc: BaseException) -> dict[str, Any]:
         code = "clob_api_key_create_failed"
         terminal = True
         retryable = False
+    elif "invalid_order_min_size" in lowered or "min size" in lowered or "minimum size" in lowered or "minimum order" in lowered:
+        code = "invalid_order_min_size"
+        terminal = True
+        retryable = False
     elif "not enough balance" in lowered or "allowance" in lowered:
         code = "balance_or_allowance"
         terminal = True
@@ -864,13 +919,16 @@ def normalize_clob_error(exc: BaseException) -> dict[str, Any]:
         code = "maker_address_not_allowed"
         terminal = True
         retryable = False
-    return {
+    result = {
         "error_code": code,
         "raw_error_reason": raw,
         "terminal": terminal,
         "retryable": retryable,
         **clob_sdk_metadata(),
     }
+    if code == "invalid_order_min_size":
+        result["suggested_min_update_required"] = True
+    return result
 
 
 def _optional_float(value: Any) -> Optional[float]:

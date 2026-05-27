@@ -249,3 +249,60 @@ Env loading does not override already-set shell variables by default. It prints 
 Continuous live is blocked by default. To disable one-shot behavior, `BTC5M_ALLOW_CONTINUOUS_LIVE=true` must be explicitly set. This should not be used for first canary runs.
 
 `BTC5M_BROWNIAN_BANKROLL_USD` must reflect the effective canary bankroll, not an aspirational account target. The `$2000` threshold is minimum-order compatibility for a `$5` order at `0.25%` bankroll risk; it does not increase risk above the threshold.
+
+Venue Minimums, Ledger, And Redemption
+--------------------------------------
+
+The Brownian strategy still uses FAK market-order semantics for live canary buys:
+
+- `create_market_order` / `createMarketOrder`
+- side `BUY`
+- amount is dollars to spend
+- price is the worst acceptable price
+- `postOrder(..., FAK)`
+
+Do not switch this strategy to passive GTC/GTD limit orders without adding heartbeat, cancel, and stale-order handling.
+
+Venue minimum sizing is configured separately from strategy risk:
+
+```bash
+BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD=5
+BTC5M_BROWNIAN_MIN_LIMIT_BUY_SIZE_SHARES=5
+BTC5M_BROWNIAN_VENUE_MIN_DISCOVERY_MODE=static
+```
+
+`BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD` replaces the old placeholder `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL` for FAK market buys. If the venue minimum is lowered, the effective small-wallet threshold is recomputed as:
+
+`min_market_buy_notional_usd / max_stake_fraction`
+
+For example, a `$1` venue minimum at `0.25%` max risk gives a `$400` threshold. The strategy still does not round an order above the max stake fraction unless a separate explicit override is added later.
+
+Live order inventory is recorded in SQLite:
+
+```bash
+BTC5M_LIVE_LEDGER_DB=state/btc5m_live_ledger.db
+```
+
+Tables include live orders, fills, outcome lots, market resolution state, redemption attempts, and redeemed lots. The JSONL execution journal remains the audit trail, while SQLite is the canonical inventory state for fills and redemption.
+
+Filled BUY orders create YES/NO ERC1155 conditional tokens. Winning tokens redeem to pUSD after market resolution; losing tokens have no payout. Redemption is intentionally outside the trading hot path.
+
+Redeemer dry-run:
+
+```bash
+.venv/bin/python scripts/run_btc5m_redeemer.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --once \
+  --dry-run
+```
+
+Redeemer loop:
+
+```bash
+.venv/bin/python scripts/run_btc5m_redeemer.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --interval-sec 60 \
+  --max-runtime-sec 3600
+```
+
+The first implementation records and audits redeemable ledger state. Real on-chain redemption fails closed with `redeem_adapter_not_implemented` until the pUSD CTF redeem adapter is explicitly completed and tested. Do not enable continuous trading until the ledger/redeemer path has passed several supervised live cycles.
