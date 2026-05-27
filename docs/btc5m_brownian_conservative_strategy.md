@@ -145,7 +145,7 @@ Manual setup diagnostic:
 
 ```bash
 .venv/bin/python scripts/setup_polymarket_funder.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --diagnose-only
 ```
 
@@ -194,24 +194,18 @@ TODO: move this formula into a shared probability-model library so live and rese
 Environment Profiles
 --------------------
 
-Use the committed examples as templates and keep local files out of git:
+On this server, `.env` is the canonical complete runtime env file. It should contain the live endpoints, wallet settings, Brownian strategy settings, CLOB L2 credentials, Polygon RPC, pUSD/CTF addresses, and safety flags in one place.
+
+The committed `.env.btc5m.brownian.*.example` files are optional override templates only. Do not split required live variables across `.env` and another profile unless the specific script invocation intentionally uses that one alternate file with `--env-file` or `BTC5M_ENV_FILE`.
+
+For an alternate test profile, copy an example to a gitignored local file:
 
 ```bash
 cp .env.btc5m.brownian.paper.example .env.btc5m.brownian.paper.local
 cp .env.btc5m.brownian.live.example .env.btc5m.brownian.live.local
 ```
 
-Paper profile:
-
-- `.env.btc5m.brownian.paper.example`
-- `.env.btc5m.brownian.paper.local`
-
-Live one-shot profile:
-
-- `.env.btc5m.brownian.live.example`
-- `.env.btc5m.brownian.live.local`
-
-The `.local` files are ignored by git. Never commit `.env.btc5m.brownian.live.local`; it contains wallet secrets.
+The `.local` files are ignored by git, but `.env` is the expected server runtime file. Never commit `.env`, `.env.btc5m.brownian.live.local`, or any file containing wallet secrets.
 
 Paper run:
 
@@ -227,21 +221,32 @@ MAX_RUNTIME_SEC=300 scripts/run_btc5m_brownian_live_oneshot.sh
 
 The live one-shot script refuses to run if:
 
-- `.env.btc5m.brownian.live.local` is missing
+- the selected env file is missing
 - `POLY_WALLET_PRIVATE_KEY` is missing or still `REPLACE_ME_DO_NOT_COMMIT`
 - `BTC5M_EXPECTED_WALLET_ADDRESS` is missing or still `REPLACE_ME_DO_NOT_COMMIT`
+- `POLYGON_RPC` is missing
+- CLOB L2 credentials are missing
 - `BTC5M_BROWNIAN_PAPER_ONLY` is not `false`
 - `BTC5M_BROWNIAN_LIVE_ENABLED` is not `true`
 - `BTC5M_EXECUTION_MODE` is not `live`
 - `BTC5M_LIVE_ONE_SHOT` is not `true`
+- `BTC5M_ALLOW_CONTINUOUS_LIVE=true`
 
 The Python runner also supports:
 
 ```bash
 .venv/bin/python scripts/run_btc5m_canary_live.py \
-  --env-file .env.btc5m.brownian.paper.local \
+  --env-file .env \
   --build-live-input \
   --max-runtime-sec 300
+```
+
+To intentionally use an alternate profile:
+
+```bash
+BTC5M_ENV_FILE=.env.btc5m.brownian.paper.local \
+  MAX_RUNTIME_SEC=300 \
+  scripts/run_btc5m_brownian_paper.sh
 ```
 
 Env loading does not override already-set shell variables by default. It prints loaded key names and redacts keys containing `PRIVATE_KEY`, `SECRET`, `TOKEN`, or `PASSWORD`.
@@ -291,7 +296,7 @@ Redeemer dry-run:
 
 ```bash
 .venv/bin/python scripts/run_btc5m_redeemer.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --once \
   --dry-run
 ```
@@ -300,7 +305,7 @@ Check CTF redeem adapter approval:
 
 ```bash
 .venv/bin/python scripts/setup_polymarket_funder.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --eoa-mode \
   --check-ctf-redeem-adapter-approval
 ```
@@ -309,7 +314,7 @@ Approve the CTF redeem adapter in EOA mode:
 
 ```bash
 .venv/bin/python scripts/setup_polymarket_funder.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --eoa-mode \
   --approve-ctf-redeem-adapter \
   --yes-i-understand-this-sends-transactions
@@ -321,7 +326,7 @@ Redeemer loop:
 
 ```bash
 .venv/bin/python scripts/run_btc5m_redeemer.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --interval-sec 60 \
   --max-runtime-sec 3600
 ```
@@ -330,7 +335,7 @@ Real one-shot redemption:
 
 ```bash
 .venv/bin/python scripts/run_btc5m_redeemer.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --once \
   --yes-i-understand-this-sends-transactions
 ```

@@ -69,6 +69,7 @@ class GammaCtfResolutionSource:
             else bool(require_onchain_confirmation)
         )
         self.fail_open = _env_bool(self.env.get("BTC5M_RESOLUTION_FAIL_OPEN", "false"))
+        self.allow_weak_gamma_mapping = _env_bool(self.env.get("BTC5M_ALLOW_WEAK_GAMMA_OUTCOME_INDEX_MAPPING", "false"))
         self.funder_config = PolymarketFunderConfig.from_env(self.env)
         self.web3 = web3 or make_web3(self.funder_config)
         self.gamma_fetcher = gamma_fetcher or self._fetch_gamma_market
@@ -79,6 +80,8 @@ class GammaCtfResolutionSource:
             "resolution_source": "gamma_ctf",
             "require_onchain_confirmation": self.require_onchain_confirmation,
             "fail_open": self.fail_open,
+            "fail_open_ignored_for_safety": True,
+            "allow_weak_gamma_mapping": self.allow_weak_gamma_mapping,
             "ctf_contract_address": self.ctf_contract_address,
         }
 
@@ -90,7 +93,7 @@ class GammaCtfResolutionSource:
             market = self.gamma_fetcher(lot)
         except Exception as exc:
             return ResolutionResult(False, error=f"gamma_fetch_failed:{exc}").as_dict()
-        gamma = infer_gamma_resolution(market or {})
+        gamma = infer_gamma_resolution(market or {}, allow_weak_mapping=self.allow_weak_gamma_mapping)
         if not gamma.get("resolved"):
             return ResolutionResult(False, gamma_status=gamma.get("status"), error=gamma.get("error") or "gamma_unresolved_or_ambiguous", diagnostics=gamma).as_dict()
         try:
@@ -172,17 +175,26 @@ def build_resolution_source(*, env: Optional[dict[str, str]] = None, allow_unava
     raise RuntimeError("resolution_source_unavailable")
 
 
-def infer_gamma_resolution(market: dict[str, Any]) -> dict[str, Any]:
+def infer_gamma_resolution(market: dict[str, Any], *, allow_weak_mapping: bool = False) -> dict[str, Any]:
     status = normalize_status(market)
-    side_by_index = side_by_outcome_index(market)
+    mapping = side_by_outcome_index(market, allow_weak_mapping=allow_weak_mapping)
+    side_by_index = mapping["side_by_index"]
     winning_side = infer_gamma_winning_side(market, side_by_index)
-    resolved = status in {"closed", "resolved", "settled", "finalized", "redeemed"} and winning_side in {"YES", "NO"}
+    weak_mapping = bool(mapping["weak"])
+    error = None
+    if weak_mapping and not allow_weak_mapping:
+        error = "gamma_outcome_label_mapping_weak"
+    elif not (status in {"closed", "resolved", "settled", "finalized", "redeemed"} and winning_side in {"YES", "NO"}):
+        error = "gamma_unresolved_or_ambiguous"
+    resolved = error is None
     return {
         "resolved": resolved,
         "winning_side": winning_side,
         "status": status,
         "side_by_index": side_by_index,
-        "error": None if resolved else "gamma_unresolved_or_ambiguous",
+        "weak_outcome_mapping": weak_mapping,
+        "warnings": ["gamma_outcome_label_mapping_weak"] if weak_mapping else [],
+        "error": error,
     }
 
 
@@ -195,16 +207,20 @@ def normalize_status(market: dict[str, Any]) -> str:
     return raw
 
 
-def side_by_outcome_index(market: dict[str, Any]) -> dict[int, str]:
+def side_by_outcome_index(market: dict[str, Any], *, allow_weak_mapping: bool = False) -> dict[str, Any]:
     outcomes = coerce_json_list(market.get("outcomes")) or coerce_json_list(market.get("shortOutcomes")) or []
     mapping: dict[int, str] = {}
     for idx, label in enumerate(outcomes[:2]):
         side = label_to_side(label)
         if side:
             mapping[idx] = side
-    if not mapping and len(outcomes) == 2:
+    weak = False
+    if len(mapping) != len(outcomes[:2]) and len(outcomes) == 2:
         mapping = {0: "YES", 1: "NO"}
-    return mapping
+        weak = True
+        if not allow_weak_mapping:
+            return {"side_by_index": mapping, "weak": weak}
+    return {"side_by_index": mapping, "weak": weak}
 
 
 def infer_gamma_winning_side(market: dict[str, Any], side_by_index: dict[int, str]) -> str:

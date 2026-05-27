@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.run_btc5m_supervised_live_cycle import build_supervised_resolution_source, run_supervised_cycle, validate_supervised_env
+from scripts.run_btc5m_supervised_live_cycle import build_parser, build_supervised_resolution_source, run_supervised_cycle, validate_supervised_env
 from src.runtime.btc5m_resolution_source import GammaCtfResolutionSource, UnavailableResolutionSource
 from src.runtime.btc5m_live_ledger import LiveLedger
 
@@ -58,9 +58,33 @@ def test_refuses_unsafe_env():
         validate_supervised_env(_env(BTC5M_BROWNIAN_PAPER_ONLY="true"), approval_checker=lambda env: True)
 
 
+def test_default_env_file_is_complete_dotenv():
+    args = build_parser().parse_args([])
+    assert args.env_file == Path(".env")
+
+
+def test_complete_dotenv_style_env_passes_validation():
+    validate_supervised_env(_env(), approval_checker=lambda env: True)
+
+
+def test_selected_env_missing_polygon_rpc_fails_clearly():
+    with pytest.raises(RuntimeError, match="missing_env:POLYGON_RPC"):
+        validate_supervised_env(_env(POLYGON_RPC=""), approval_checker=lambda env: True)
+
+
 def test_refuses_continuous_live():
     with pytest.raises(RuntimeError, match="continuous_live_env_detected"):
         validate_supervised_env(_env(BTC5M_ALLOW_CONTINUOUS_LIVE="true"), approval_checker=lambda env: True)
+
+
+def test_refuses_resolution_fail_open_live():
+    with pytest.raises(RuntimeError, match="resolution_fail_open_forbidden_live"):
+        validate_supervised_env(_env(BTC5M_RESOLUTION_FAIL_OPEN="true"), approval_checker=lambda env: True)
+
+
+def test_refuses_resolution_without_onchain_confirmation_live():
+    with pytest.raises(RuntimeError, match="resolution_requires_onchain_confirmation_live"):
+        validate_supervised_env(_env(BTC5M_RESOLUTION_REQUIRE_ONCHAIN_CONFIRMATION="false"), approval_checker=lambda env: True)
 
 
 def test_missing_approval_refuses():

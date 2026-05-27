@@ -17,6 +17,8 @@ Warning: `BTC5M_EXECUTION_MODE=live` with `BTC5M_LIVE_TRADING_ENABLED=true` can 
 
 ## Required Env
 
+On this server, `.env` is the canonical complete runtime env file. Use `--env-file .env` for live, setup, redeemer, and supervised harness commands unless you are intentionally testing a single alternate profile.
+
 - `BTC5M_POLICY_ID=state3_ask_brownian_age60_v0`
 - `BTC5M_EXECUTION_MODE=observe|live`
 - `BTC5M_LIVE_TRADING_ENABLED=false` by default
@@ -153,12 +155,12 @@ Deposit-wallet mode:
 
 Operator sequence:
 
-1. Create/edit `.env.btc5m.brownian.live.local`.
+1. Create/edit `.env`, the complete server runtime env file.
 2. Run:
 
 ```bash
 .venv/bin/python scripts/setup_polymarket_funder.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --diagnose-only
 ```
 
@@ -166,7 +168,7 @@ Operator sequence:
 
 ```bash
 .venv/bin/python scripts/setup_polymarket_funder.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --eoa-mode \
   --approve-onramp 10 \
   --wrap-usdce 10 \
@@ -191,7 +193,7 @@ Redeemer dry-run:
 
 ```bash
 .venv/bin/python scripts/run_btc5m_redeemer.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --once \
   --dry-run
 ```
@@ -200,12 +202,12 @@ Check and approve the CTF redeem adapter:
 
 ```bash
 .venv/bin/python scripts/setup_polymarket_funder.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --eoa-mode \
   --check-ctf-redeem-adapter-approval
 
 .venv/bin/python scripts/setup_polymarket_funder.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --eoa-mode \
   --approve-ctf-redeem-adapter \
   --yes-i-understand-this-sends-transactions
@@ -217,7 +219,7 @@ Redeemer loop:
 
 ```bash
 .venv/bin/python scripts/run_btc5m_redeemer.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --interval-sec 60 \
   --max-runtime-sec 3600
 ```
@@ -226,7 +228,7 @@ Real one-shot redemption:
 
 ```bash
 .venv/bin/python scripts/run_btc5m_redeemer.py \
-  --env-file .env.btc5m.brownian.live.local \
+  --env-file .env \
   --once \
   --yes-i-understand-this-sends-transactions
 ```

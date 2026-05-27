@@ -32,7 +32,7 @@ HARD_STOP_EVENTS = {
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Supervised one-hour BTC-5m Brownian live canary cycle.")
-    parser.add_argument("--env-file", type=Path, default=Path(".env.btc5m.brownian.live.local"))
+    parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--max-runtime-sec", type=float, default=3600.0)
     parser.add_argument("--order-cycle-runtime-sec", type=float, default=900.0)
     parser.add_argument("--poll-interval-sec", type=float, default=10.0)
@@ -85,6 +85,10 @@ def validate_supervised_env(env: dict[str, str], *, approval_checker: Callable[[
             raise RuntimeError(f"unsafe_env:{key}")
     if str(env.get("BTC5M_ALLOW_CONTINUOUS_LIVE", "false")).strip().lower() == "true":
         raise RuntimeError("continuous_live_env_detected")
+    if str(env.get("BTC5M_RESOLUTION_FAIL_OPEN", "false")).strip().lower() == "true":
+        raise RuntimeError("resolution_fail_open_forbidden_live")
+    if str(env.get("BTC5M_RESOLUTION_REQUIRE_ONCHAIN_CONFIRMATION", "true")).strip().lower() == "false":
+        raise RuntimeError("resolution_requires_onchain_confirmation_live")
     for key in ["POLYGON_RPC", "POLY_WALLET_PRIVATE_KEY", "BTC5M_EXPECTED_WALLET_ADDRESS"]:
         if not env.get(key):
             raise RuntimeError(f"missing_env:{key}")

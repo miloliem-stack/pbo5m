@@ -142,3 +142,34 @@ def test_onchain_resolved_but_gamma_ambiguous_fails_closed():
 
     assert result["resolved"] is False
     assert result["error"] == "gamma_unresolved_or_ambiguous"
+
+
+def test_weak_gamma_label_fallback_fails_closed_by_default():
+    source = GammaCtfResolutionSource(
+        env={"POLYGON_RPC": "mock"},
+        web3=FakeWeb3(denominator=1, nums=[1, 0]),
+        gamma_fetcher=lambda lot: {"closed": True, "outcomes": '["Bitcoin Up","Bitcoin Down"]', "outcomePrices": '["1","0"]'},
+    )
+
+    result = source.resolve({"condition_id": "0x" + "11" * 32})
+
+    assert result["resolved"] is False
+    assert result["error"] == "gamma_outcome_label_mapping_weak"
+
+
+def test_weak_gamma_label_fallback_can_be_allowed_explicitly():
+    source = GammaCtfResolutionSource(
+        env={"POLYGON_RPC": "mock", "BTC5M_ALLOW_WEAK_GAMMA_OUTCOME_INDEX_MAPPING": "true"},
+        web3=FakeWeb3(denominator=1, nums=[1, 0]),
+        gamma_fetcher=lambda lot: {"closed": True, "outcomes": '["Bitcoin Up","Bitcoin Down"]', "outcomePrices": '["1","0"]'},
+    )
+
+    result = source.resolve({"condition_id": "0x" + "11" * 32})
+
+    assert result["resolved"] is True
+    assert result["winning_side"] == "YES"
+
+
+def test_resolution_diagnostics_marks_fail_open_ignored():
+    source = GammaCtfResolutionSource(env={"POLYGON_RPC": "mock", "BTC5M_RESOLUTION_FAIL_OPEN": "true"}, web3=FakeWeb3(0, [0, 0]))
+    assert source.diagnostics()["fail_open_ignored_for_safety"] is True
