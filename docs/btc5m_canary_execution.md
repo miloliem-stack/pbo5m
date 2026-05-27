@@ -126,6 +126,58 @@ One-time auth diagnostic/bootstrap command:
 
 The diagnostic prints package family/version and adapter config without wallet private keys or API secrets.
 
+## pUSD Funder Setup
+
+Polymarket trading collateral is pUSD on Polygon. USDC.e in the wallet is not directly usable for CLOB buys. USDC.e must be wrapped into pUSD through `CollateralOnramp`, and pUSD must sit in the actual CLOB funder address.
+
+This is setup work, not order-hot-path work. The live order path does not approve, wrap, relay, or batch wallet operations. It only performs read-only preflight checks and fails closed.
+
+Default addresses:
+
+- USDC.e: `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`
+- pUSD: `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`
+- CollateralOnramp: `0x93070a847efEf7F70739046A929D47a521F5B8ee`
+
+EOA mode:
+
+- `POLY_SIGNATURE_TYPE=0`
+- pUSD should be in the EOA/funder wallet.
+- Setup can approve USDC.e to the onramp, wrap USDC.e to pUSD, sync CLOB collateral allowance, and optionally approve pUSD to an exchange address if configured.
+
+Deposit-wallet mode:
+
+- `POLY_SIGNATURE_TYPE=3`
+- `POLY_FUNDER=<deposit wallet address>` is required.
+- pUSD must be in the deposit wallet/funder. pUSD held by the owner EOA does not count as deposit-wallet CLOB buying power.
+- Approvals from the deposit wallet require a relayer WALLET batch. Mutation for this mode is intentionally not implemented yet; the setup script diagnoses and refuses mutation rather than faking success.
+
+Operator sequence:
+
+1. Create/edit `.env.btc5m.brownian.live.local`.
+2. Run:
+
+```bash
+.venv/bin/python scripts/setup_polymarket_funder.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --diagnose-only
+```
+
+3. If using EOA mode, perform manual setup with explicit flags, for example:
+
+```bash
+.venv/bin/python scripts/setup_polymarket_funder.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --eoa-mode \
+  --approve-onramp 10 \
+  --wrap-usdce 10 \
+  --sync-clob-collateral-allowance \
+  --yes-i-understand-this-sends-transactions
+```
+
+4. Rerun diagnose-only until pUSD balance and CLOB collateral readiness are sufficient.
+5. Run a paper smoke test.
+6. Run one supervised live canary.
+
 ## Observe Example
 
 Autonomous observe mode from live market discovery, live quotes, the configured Brownian source, and the configured HMM state source:

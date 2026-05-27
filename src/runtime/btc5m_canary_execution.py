@@ -15,6 +15,7 @@ from typing import Any, Optional, Protocol
 
 from ..time_utils import isoformat_utc, parse_datetime, utc_now
 from .btc5m_canary_policy import POLICY_ID, CanaryConfig
+from .polymarket_funder_setup import PolymarketFunderConfig, from_units, make_web3, read_erc20_allowance, read_erc20_balance
 
 
 LIVE_BLOCKING_EVENT_TYPES = {
@@ -139,6 +140,7 @@ class PyClobClientAdapter:
         self.Side = Side
         self.SignatureTypeV2 = SignatureTypeV2
         sdk_meta = clob_sdk_metadata()
+        self.funder_config = PolymarketFunderConfig.from_env(self.env)
         private_key = self.env.get("POLY_WALLET_PRIVATE_KEY")
         if not private_key:
             raise RuntimeError("POLY_WALLET_PRIVATE_KEY is required for live BTC5M canary execution")
@@ -240,6 +242,44 @@ class PyClobClientAdapter:
             order_type=order_type,
         )
         return result if isinstance(result, dict) else {"result": result}
+
+    def preflight_order(self, intent: OrderIntent) -> Optional[dict[str, Any]]:
+        if self.adapter_config.get("signature_type") == 3 and self.adapter_config.get("funder_source") != "POLY_FUNDER":
+            return {"skip_reason": "missing_deposit_wallet_funder"}
+        if self.adapter_config.get("signature_type") in {0, 1, 2} and self.env.get("POLY_FUNDER") and _env_bool(self.env.get("BTC5M_REJECT_NON_1271_DEPOSIT_FUNDER", "false")):
+            return {"skip_reason": "funder_signature_type_mismatch"}
+        try:
+            web3 = make_web3(self.funder_config)
+            funder = self.adapter_config.get("funder")
+            balance = read_erc20_balance(web3, self.funder_config.pusd_token_address, funder)
+            required_units = int(Decimal(str(intent.stake_usd)) * Decimal(10**6))
+            if balance is None or balance < required_units:
+                return {
+                    "skip_reason": "insufficient_pusd_balance",
+                    "pusd_balance": from_units(balance or 0),
+                    "required_pusd": float(intent.stake_usd),
+                }
+            allowance_result = self._preflight_allowance(web3, funder, required_units)
+            if allowance_result is not None:
+                return allowance_result
+        except Exception as exc:
+            return {"skip_reason": "pusd_preflight_unavailable", "raw_error_reason": str(exc)}
+        return None
+
+    def _preflight_allowance(self, web3: Any, funder: Optional[str], required_units: int) -> Optional[dict[str, Any]]:
+        exchange = self.funder_config.exchange_address
+        if exchange:
+            allowance = read_erc20_allowance(web3, self.funder_config.pusd_token_address, funder, exchange)
+            if allowance is None or allowance < required_units:
+                return {
+                    "skip_reason": "insufficient_clob_collateral_allowance",
+                    "pusd_allowance": from_units(allowance or 0),
+                    "required_pusd": from_units(required_units),
+                    "spender": exchange,
+                }
+        elif _env_bool(self.env.get("BTC5M_REQUIRE_READABLE_PUSD_ALLOWANCE", "false")):
+            return {"skip_reason": "insufficient_clob_collateral_allowance", "raw_error_reason": "POLY_EXCHANGE_ADDRESS missing"}
+        return None
 
     def get_order_status(self, order_id: str) -> dict[str, Any]:  # pragma: no cover - live adapter
         result = self.client.get_order(order_id)
@@ -386,6 +426,11 @@ class CanaryExecutor:
             event = self._event("execution_error", intent=intent, raw_error_reason="missing_clob_adapter")
             self.journal.write(event)
             return event
+        preflight = self._preflight_order(intent)
+        if preflight is not None:
+            event = self._event("execution_skipped", intent=intent, **preflight)
+            self.journal.write(event)
+            return event
         self.order_attempts += 1
         try:
             submitted = self.adapter.submit_buy(intent)
@@ -437,6 +482,11 @@ class CanaryExecutor:
         if self.adapter is not None:
             return self.adapter.wallet_address()
         return os.getenv("POLY_WALLET_ADDRESS")
+
+    def _preflight_order(self, intent: OrderIntent) -> Optional[dict[str, Any]]:
+        if self.adapter is not None and hasattr(self.adapter, "preflight_order"):
+            return self.adapter.preflight_order(intent)  # type: ignore[attr-defined]
+        return None
 
     def _event(self, event_type: str, *, intent: Optional[OrderIntent] = None, decision: Optional[dict[str, Any]] = None, **extra: Any) -> dict[str, Any]:
         source = decision or {}

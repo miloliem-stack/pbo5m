@@ -112,6 +112,12 @@ def execute_brownian_request_with_canary_route(executor: CanaryExecutor, request
         event = executor._event("execution_error", intent=intent, raw_error_reason="missing_clob_adapter")
         executor.journal.write(event)
         return event
+    if hasattr(executor.adapter, "preflight_order"):
+        preflight = executor.adapter.preflight_order(intent)  # type: ignore[attr-defined]
+        if preflight is not None:
+            event = executor._event("execution_skipped", intent=intent, **preflight)
+            executor.journal.write(event)
+            return event
     executor.order_attempts += 1
     try:
         submitted = executor.adapter.submit_buy(intent)

@@ -133,6 +133,22 @@ Signature type guidance:
 
 `Could not create api key` means the process failed during L2 credential bootstrap before any order submission. Use pre-created L2 credentials for live canary runs.
 
+Polymarket collateral setup:
+
+- Trading collateral is pUSD on Polygon.
+- USDC.e must be wrapped into pUSD through CollateralOnramp before it can fund CLOB buys.
+- pUSD must remain in the actual CLOB funder address.
+- For `POLY_SIGNATURE_TYPE=3`, that funder is the deposit wallet in `POLY_FUNDER`, not the owner EOA.
+- Wrapping, approvals, relayer batches, and `update_balance_allowance` are setup/preflight operations only; they are not executed in the live order hot path.
+
+Manual setup diagnostic:
+
+```bash
+.venv/bin/python scripts/setup_polymarket_funder.py \
+  --env-file .env.btc5m.brownian.live.local \
+  --diagnose-only
+```
+
 Before another supervised one-shot after a CLOB SDK change, run:
 
 ```bash
