@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -65,6 +67,42 @@ def test_polygon_poa_middleware_is_injected(monkeypatch):
 
     assert funder_setup.inject_polygon_poa_middleware(fake) is True
     assert fake.middleware_onion.calls == [("poa_middleware", 0)]
+
+
+def test_update_clob_collateral_allowance_uses_v2_params(monkeypatch):
+    fake_module = types.ModuleType("py_clob_client_v2")
+
+    class AssetType:
+        COLLATERAL = "COLLATERAL"
+
+    class SignatureTypeV2:
+        EOA = "EOA"
+
+    class BalanceAllowanceParams:
+        def __init__(self, asset_type=None, signature_type=None):
+            self.asset_type = asset_type
+            self.signature_type = signature_type
+
+    fake_module.AssetType = AssetType
+    fake_module.SignatureTypeV2 = SignatureTypeV2
+    fake_module.BalanceAllowanceParams = BalanceAllowanceParams
+    monkeypatch.setitem(sys.modules, "py_clob_client_v2", fake_module)
+    captured = {}
+
+    class Client:
+        def update_balance_allowance(self, params):
+            captured["params"] = params
+            return {"ok": True}
+
+    class Adapter:
+        client = Client()
+        adapter_config = {"signature_type": 0}
+
+    response = funder_setup.update_clob_collateral_allowance(Adapter())
+
+    assert response == {"ok": True}
+    assert captured["params"].asset_type == "COLLATERAL"
+    assert captured["params"].signature_type == "EOA"
 
 
 def test_runtime_preflight_fails_closed_on_missing_pusd_balance(tmp_path: Path):

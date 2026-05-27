@@ -292,11 +292,39 @@ def update_clob_collateral_allowance(clob_adapter: Any) -> Any:
     if not hasattr(client, "update_balance_allowance"):
         raise RuntimeError("clob_update_balance_allowance_unavailable")
     try:
-        from py_clob_client_v2 import AssetType
+        from py_clob_client_v2 import AssetType, BalanceAllowanceParams, SignatureTypeV2
+    except ImportError:  # pragma: no cover - optional runtime dependency
+        from py_clob_client_v2 import AssetType, BalanceAllowanceParams
 
-        return client.update_balance_allowance(asset_type=getattr(AssetType, "COLLATERAL", "COLLATERAL"))
+        SignatureTypeV2 = None
+
+    kwargs = {"asset_type": getattr(AssetType, "COLLATERAL", "COLLATERAL")}
+    signature_type = getattr(getattr(clob_adapter, "adapter_config", {}), "get", lambda _key, _default=None: _default)("signature_type", None)
+    mapped_signature_type = map_signature_type_for_clob_params(signature_type, SignatureTypeV2)
+    if mapped_signature_type is not None:
+        kwargs["signature_type"] = mapped_signature_type
+    try:
+        params = BalanceAllowanceParams(**kwargs)
     except TypeError:
-        return client.update_balance_allowance("COLLATERAL")
+        kwargs.pop("signature_type", None)
+        params = BalanceAllowanceParams(**kwargs)
+    return client.update_balance_allowance(params)
+
+
+def map_signature_type_for_clob_params(value: Any, signature_type_enum: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return value
+    if signature_type_enum is None:
+        return parsed
+    names = {0: "EOA", 1: "POLY_PROXY", 2: "GNOSIS_SAFE", 3: "POLY_1271"}
+    name = names.get(parsed)
+    if name and hasattr(signature_type_enum, name):
+        return getattr(signature_type_enum, name)
+    return parsed
 
 
 def write_setup_log(path: str | Path, row: dict[str, Any]) -> None:
