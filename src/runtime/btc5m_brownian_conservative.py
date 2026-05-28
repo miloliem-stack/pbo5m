@@ -459,7 +459,7 @@ def validate_brownian_runtime_env(env: Optional[dict[str, str]] = None) -> list[
     except (TypeError, ValueError):
         bankroll = 0.0
 
-    if cfg.enabled and bankroll <= 0:
+    if cfg.enabled and cfg.paper_only and bankroll <= 0:
         errors.append("brownian_bankroll_missing_or_invalid")
     if not cfg.paper_only and not cfg.live_enabled:
         errors.append("live_not_enabled")

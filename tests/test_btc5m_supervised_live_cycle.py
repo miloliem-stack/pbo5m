@@ -5,9 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from scripts.run_btc5m_supervised_live_cycle import build_parser, build_supervised_resolution_source, run_supervised_cycle, validate_supervised_env
+from scripts.run_btc5m_supervised_live_cycle import (
+    brownian_runtime_config_snapshot,
+    build_parser,
+    build_supervised_resolution_source,
+    run_order_subprocess,
+    run_supervised_cycle,
+    validate_supervised_env,
+)
 from src.runtime.btc5m_resolution_source import GammaCtfResolutionSource, UnavailableResolutionSource
 from src.runtime.btc5m_live_ledger import LiveLedger
+from src.time_utils import isoformat_utc, utc_now
 
 
 def _env(**overrides):
@@ -72,6 +80,21 @@ def test_selected_env_missing_polygon_rpc_fails_clearly():
         validate_supervised_env(_env(POLYGON_RPC=""), approval_checker=lambda env: True)
 
 
+def test_brownian_runtime_snapshot_uses_min_order_notional_over_alias():
+    snap = brownian_runtime_config_snapshot(
+        _env(
+            BTC5M_BROWNIAN_BANKROLL_USD="2000",
+            BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL="2",
+            BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD="5",
+            BTC5M_BROWNIAN_MAX_STAKE_FRACTION="0.0025",
+        )
+    )
+
+    assert snap["min_order_notional"] == 2.0
+    assert snap["min_market_buy_notional_usd"] == 2.0
+    assert snap["small_wallet_threshold"] == pytest.approx(800.0)
+
+
 def test_refuses_continuous_live():
     with pytest.raises(RuntimeError, match="continuous_live_env_detected"):
         validate_supervised_env(_env(BTC5M_ALLOW_CONTINUOUS_LIVE="true"), approval_checker=lambda env: True)
@@ -126,8 +149,9 @@ def test_calls_order_reconcile_resolution_redeemer_steps(tmp_path: Path):
         calls.append("order")
         journal = args.journal_root / "2026-05-27" / "execution_events.jsonl"
         journal.parent.mkdir(parents=True)
+        ts = isoformat_utc(utc_now())
         journal.write_text(
-            '{"event_type":"order_intent_created","policy_id":"brownian_no_hmm_conservative_v1","market_id":"m1","condition_id":"c1","token_id":"tok","selected_side":"YES","client_order_id":"cid","idempotency_key":"idem","limit_price":0.4,"stake_usd":5}\\n',
+            '{"event_type":"order_intent_created","execution_ts":"' + ts + '","policy_id":"brownian_no_hmm_conservative_v1","market_id":"m1","condition_id":"c1","token_id":"tok","selected_side":"YES","client_order_id":"cid","idempotency_key":"idem","limit_price":0.4,"stake_usd":5}\\n',
             encoding="utf-8",
         )
         return {"returncode": 0}
@@ -146,9 +170,58 @@ def test_stops_on_unknown_order(tmp_path: Path):
     def order_runner(args):
         journal = args.journal_root / "2026-05-27" / "execution_events.jsonl"
         journal.parent.mkdir(parents=True)
-        journal.write_text('{"event_type":"order_unknown_after_submit"}\n', encoding="utf-8")
+        journal.write_text('{"event_type":"order_unknown_after_submit","execution_ts":"' + isoformat_utc(utc_now()) + '"}\n', encoding="utf-8")
         return {"returncode": 0}
 
     summary = run_supervised_cycle(args=_args(tmp_path), ledger=ledger, log_dir=tmp_path / "log", order_runner=order_runner)
 
     assert summary["hard_stop_reason"] == "unknown_order_state_after_submit"
+
+
+def test_supervised_summary_ignores_old_journal_events(tmp_path: Path):
+    ledger = LiveLedger(tmp_path / "ledger.db")
+    journal = tmp_path / "journal" / "2026-05-27" / "execution_events.jsonl"
+    journal.parent.mkdir(parents=True)
+    journal.write_text(
+        "\n".join(
+            '{"event_type":"order_intent_created","execution_ts":"2026-01-01T00:00:00+00:00"}'
+            for _ in range(20)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = run_supervised_cycle(
+        args=_args(tmp_path, max_live_order_attempts=1),
+        ledger=ledger,
+        log_dir=tmp_path / "log",
+        order_runner=lambda args: {"returncode": 0},
+    )
+
+    assert summary["live_order_attempts"] == 0
+    assert summary["hard_stop_reason"] is None
+    assert summary["log_dir"] == str(tmp_path / "log")
+
+
+def test_order_subprocess_receives_selected_env_file(monkeypatch, tmp_path: Path):
+    captured = {}
+
+    def fake_run(cmd, cwd, text, capture_output, check, env):
+        captured["cmd"] = cmd
+        captured["env"] = env
+
+        class Result:
+            returncode = 0
+            stdout = "{}"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("scripts.run_btc5m_supervised_live_cycle.subprocess.run", fake_run)
+    args = _args(tmp_path)
+    result = run_order_subprocess(args)
+
+    assert result["returncode"] == 0
+    assert captured["env"]["BTC5M_ENV_FILE"] == str(args.env_file)
+    assert "--env-file" in captured["cmd"]
+    assert str(args.env_file) in captured["cmd"]

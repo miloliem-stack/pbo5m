@@ -30,10 +30,10 @@ Environment
 - `BTC5M_BROWNIAN_TOP_N_LEVELS=10`
 - `BTC5M_BROWNIAN_MAX_DECISION_STALENESS_SECONDS=3.0`
 - `BTC5M_BROWNIAN_MAX_DEPTH_UTILIZATION=1.0`
-- `BTC5M_BROWNIAN_BANKROLL_USD`
-- `BTC5M_BROWNIAN_SESSION_START_BANKROLL_USD`
-- `BTC5M_BROWNIAN_DAY_START_BANKROLL_USD`
-- `BTC5M_BROWNIAN_DAILY_PNL_USD`
+- `BTC5M_BROWNIAN_BANKROLL_USD` for paper/testing only
+- `BTC5M_BROWNIAN_SESSION_START_BANKROLL_USD` optional live stop reference
+- `BTC5M_BROWNIAN_DAY_START_BANKROLL_USD` optional live stop reference
+- `BTC5M_BROWNIAN_DAILY_PNL_USD` optional live stop input
 
 Paper mode requires `BTC5M_BROWNIAN_ENABLED=true` and keeps `BTC5M_BROWNIAN_PAPER_ONLY=true`.
 
@@ -66,10 +66,10 @@ The validator rechecks risk-critical fields against the current runtime snapshot
 - current executable ask versus intended ask plus slippage
 - current edge after quote refresh
 - expected log growth after probability haircut and ask slippage
-- bankroll, stake fraction, $2000 minimum-order compatibility threshold
+- live pUSD bankroll, stake fraction, and minimum-order compatibility threshold
 - top-10 executable depth cap and depth utilization
 
-The $2000 threshold is a minimum-order compatibility threshold. It does not increase risk in v1; the maximum stake fraction remains 0.25% below and above $2000.
+The minimum-order compatibility threshold is computed from `min_order_notional / max_stake_fraction`. It does not increase risk in v1; the maximum stake fraction remains 0.25%.
 
 Runner / Execution Adapter
 --------------------------
@@ -104,7 +104,7 @@ The server entrypoint `scripts/run_btc5m_canary_live.py` now dispatches by strat
 
 For Brownian mode the server uses `--build-live-input` to discover the active BTC 5-minute market, fetch live YES/NO quotes, attach Brownian state, and pass the resulting payload into `run_brownian_conservative_cycle(...)`.
 
-Until wallet ledger balance is wired into the live input builder, set `BTC5M_BROWNIAN_BANKROLL_USD` to the effective bankroll the strategy may risk. If it is missing, the strategy fails closed through bankroll/min-order sizing checks.
+In live mode, the server ignores `BTC5M_BROWNIAN_BANKROLL_USD` for sizing. It reads pUSD balance for the effective funder, subtracts ledger reservations, and uses that available pUSD as `bankroll`. If pUSD balance cannot be read, the live path fails closed before strategy sizing. `BTC5M_BROWNIAN_BANKROLL_USD` is only for paper/testing.
 
 Paper mode:
 
@@ -253,7 +253,7 @@ Env loading does not override already-set shell variables by default. It prints 
 
 Continuous live is blocked by default. To disable one-shot behavior, `BTC5M_ALLOW_CONTINUOUS_LIVE=true` must be explicitly set. This should not be used for first canary runs.
 
-`BTC5M_BROWNIAN_BANKROLL_USD` must reflect the effective canary bankroll, not an aspirational account target. The `$2000` threshold is minimum-order compatibility for a `$5` order at `0.25%` bankroll risk; it does not increase risk above the threshold.
+`BTC5M_BROWNIAN_BANKROLL_USD` is for paper/testing only. Live sizing uses available pUSD from the funder wallet minus ledger reservations. The threshold for placing the venue minimum is `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL / BTC5M_BROWNIAN_MAX_STAKE_FRACTION`; it does not increase risk above the configured max stake fraction.
 
 Venue Minimums, Ledger, And Redemption
 --------------------------------------

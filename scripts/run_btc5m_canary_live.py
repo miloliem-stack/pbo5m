@@ -215,6 +215,18 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
             }
             time.sleep(float(args.poll_interval_sec))
             continue
+        if executor is not None:
+            capital_error = apply_live_capital_risk_state(built["input"], executor, cfg)
+            if capital_error is not None:
+                result = {
+                    "status": "live_input_missing",
+                    "strategy_id": BROWNIAN_STRATEGY_ID,
+                    "missing_input_reason": capital_error,
+                    "missing_components": ["live_bankroll"],
+                }
+                live_logger.write_decision(result)
+                time.sleep(float(args.poll_interval_sec))
+                continue
         routed = run_btc5m_strategy_cycle(
             strategy_id=BROWNIAN_STRATEGY_ID,
             live_input=built["input"],
@@ -231,6 +243,55 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
                 break
         time.sleep(float(args.poll_interval_sec))
     return result
+
+
+def apply_live_capital_risk_state(input_payload: dict[str, Any], executor: CanaryExecutor, cfg: BrownianConservativeConfig) -> str | None:
+    try:
+        if executor.adapter is None or not hasattr(executor.adapter, "capital_state"):
+            return "pusd_capital_state_unavailable"
+        capital = executor.adapter.capital_state()  # type: ignore[attr-defined]
+        pusd_balance = _optional_float(capital.get("pusd_balance"))
+        if pusd_balance is None:
+            return "pusd_balance_unavailable"
+        reserved_pusd = executor.ledger.open_reserved_pusd() if executor.ledger is not None else 0.0
+        unredeemed_winners = executor.ledger.unredeemed_winning_estimate() if executor.ledger is not None else 0.0
+        available = max(0.0, pusd_balance - reserved_pusd)
+    except Exception as exc:
+        meta = input_payload.setdefault("live_input_meta", {})
+        meta["capital_error"] = str(exc)
+        return "pusd_capital_state_unavailable"
+
+    existing = dict(input_payload.get("risk_state") or {})
+    session_start = _optional_float(os.environ.get("BTC5M_BROWNIAN_SESSION_START_BANKROLL_USD")) or available
+    day_start = _optional_float(os.environ.get("BTC5M_BROWNIAN_DAY_START_BANKROLL_USD")) or available
+    daily_pnl = _optional_float(os.environ.get("BTC5M_BROWNIAN_DAILY_PNL_USD")) or 0.0
+    if available < cfg.min_order_notional and unredeemed_winners > 0:
+        existing["capital_skip_hint"] = "insufficient_pusd_unredeemed_winners_pending"
+    existing.update(
+        {
+            "bankroll": available,
+            "current_bankroll": available,
+            "bankroll_before": available,
+            "session_start_bankroll": session_start,
+            "day_start_bankroll": day_start,
+            "daily_pnl": daily_pnl,
+            "pusd_balance": pusd_balance,
+            "reserved_pusd": reserved_pusd,
+            "available_trade_bankroll": available,
+            "unredeemed_winning_estimate": unredeemed_winners,
+            "bankroll_source": "live_pusd_balance_minus_ledger_reservations",
+        }
+    )
+    input_payload["risk_state"] = existing
+    input_payload["bankroll"] = available
+    input_payload.setdefault("live_input_meta", {})["capital_state"] = {
+        "pusd_balance": pusd_balance,
+        "reserved_pusd": reserved_pusd,
+        "available_trade_bankroll": available,
+        "unredeemed_winning_estimate": unredeemed_winners,
+        "bankroll_source": "live_pusd_balance_minus_ledger_reservations",
+    }
+    return None
 
 
 def brownian_execution_config_from_env() -> ExecutionConfig:
@@ -319,6 +380,15 @@ def _state_is_stale(payload: dict, max_age_sec: float) -> bool:
     if asof is None:
         return True
     return (utc_now() - asof).total_seconds() > max_age_sec
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -17,11 +17,12 @@ if str(ROOT) not in sys.path:
 from scripts.reconcile_btc5m_ledger_from_execution_journal import reconcile
 from scripts.run_btc5m_redeemer import run_once as run_redeemer_once
 from scripts.update_btc5m_market_resolutions import update_once as update_resolutions_once
+from src.runtime.btc5m_brownian_conservative import BrownianConservativeConfig
 from src.runtime.btc5m_live_ledger import LiveLedger
 from src.runtime.env_file import load_env_file
 from src.runtime.btc5m_resolution_source import UnavailableResolutionSource, build_resolution_source
 from src.runtime.polymarket_funder_setup import PolymarketFunderConfig, make_web3, read_erc1155_approval, read_erc20_balance
-from src.time_utils import isoformat_utc, utc_now
+from src.time_utils import isoformat_utc, parse_datetime, utc_now
 
 
 HARD_STOP_EVENTS = {
@@ -54,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    load_env_file(args.env_file, required=True)
+    load_env_file(args.env_file, override=True, required=True)
     ledger = LiveLedger(args.ledger_db)
     log_dir = Path("artifacts/btc5m_supervised_live_cycle") / utc_now().strftime("%Y-%m-%d/%H")
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -63,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         resolution_source = build_supervised_resolution_source(args, os.environ)
         summary = run_supervised_cycle(args=args, ledger=ledger, log_dir=log_dir, resolution_source=resolution_source)
     except Exception as exc:
-        summary = base_summary(args, hard_stop_reason=str(exc))
+        summary = base_summary(args, log_dir=log_dir, hard_stop_reason=str(exc))
         write_json(log_dir / "summary.json", summary)
         print(json.dumps(summary, indent=2, sort_keys=True, default=str))
         return 1
@@ -128,9 +129,10 @@ def run_supervised_cycle(
     resolution_source: Any = None,
     redeemer_adapter: Any = None,
 ) -> dict[str, Any]:
+    run_started_ts = isoformat_utc(utc_now())
     started = time.monotonic()
     deadline = started + args.max_runtime_sec
-    summary = base_summary(args)
+    summary = base_summary(args, log_dir=log_dir, run_started_ts=run_started_ts)
     last_resolution = 0.0
     last_redeem = 0.0
     while time.monotonic() <= deadline:
@@ -155,7 +157,7 @@ def run_supervised_cycle(
             )
             append_jsonl(log_dir / "supervised_cycle.jsonl", {"step": "redeemer", "result": redeem})
             last_redeem = now
-        summary.update(summarize_ledger_and_journal(ledger, args.journal_root))
+        summary.update(summarize_ledger_and_journal(ledger, args.journal_root, since_ts=run_started_ts))
         stop = hard_stop_reason(args, summary, order_result)
         if stop:
             summary["hard_stop_reason"] = stop
@@ -175,23 +177,25 @@ def run_order_subprocess(args: argparse.Namespace) -> dict[str, Any]:
         "--max-runtime-sec",
         str(args.order_cycle_runtime_sec),
     ]
-    proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, check=False)
+    child_env = os.environ.copy()
+    child_env["BTC5M_ENV_FILE"] = str(args.env_file)
+    proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, check=False, env=child_env)
     return {"returncode": proc.returncode, "stdout_tail": proc.stdout[-4000:], "stderr_tail": proc.stderr[-4000:]}
 
 
-def summarize_ledger_and_journal(ledger: LiveLedger, journal_root: Path) -> dict[str, Any]:
-    events = list_recent_journal_events(journal_root)
+def summarize_ledger_and_journal(ledger: LiveLedger, journal_root: Path, *, since_ts: str | None = None) -> dict[str, Any]:
+    events = list_recent_journal_events(journal_root, since_ts=since_ts)
     return {
         "live_order_attempts": sum(1 for e in events if e.get("event_type") == "order_intent_created"),
         "submitted_orders": sum(1 for e in events if e.get("event_type") == "live_order_submitted"),
-        "filled_orders": ledger.count_rows("live_fills"),
+        "filled_orders": count_rows_since(ledger, "live_fills", "fill_ts", since_ts),
         "partial_fills": sum(1 for e in events if e.get("event_type") == "order_partially_filled"),
         "rejected_orders": sum(1 for e in events if e.get("event_type") in {"order_rejected", "execution_rejected_by_venue"}),
         "unknown_orders": sum(1 for e in events if e.get("event_type") == "order_unknown_after_submit"),
-        "redemption_attempts": ledger.count_rows("redemption_attempts"),
-        "redemptions_confirmed": count_confirmed_redemptions(ledger),
-        "resolved_wins": count_lots_by_status(ledger, "resolved_win"),
-        "resolved_losses": count_lots_by_status(ledger, "resolved_loss"),
+        "redemption_attempts": count_rows_since(ledger, "redemption_attempts", "created_ts", since_ts),
+        "redemptions_confirmed": count_confirmed_redemptions(ledger, since_ts=since_ts),
+        "resolved_wins": count_lots_by_status(ledger, "resolved_win", since_ts=since_ts),
+        "resolved_losses": count_lots_by_status(ledger, "resolved_loss", since_ts=since_ts),
     }
 
 
@@ -209,8 +213,15 @@ def hard_stop_reason(args: argparse.Namespace, summary: dict[str, Any], order_re
     return None
 
 
-def base_summary(args: argparse.Namespace, *, hard_stop_reason: str | None = None) -> dict[str, Any]:
+def base_summary(
+    args: argparse.Namespace,
+    *,
+    log_dir: Path | None = None,
+    run_started_ts: str | None = None,
+    hard_stop_reason: str | None = None,
+) -> dict[str, Any]:
     return {
+        "run_started_ts": run_started_ts,
         "runtime_sec": 0.0,
         "live_order_attempts": 0,
         "submitted_orders": 0,
@@ -225,32 +236,100 @@ def base_summary(args: argparse.Namespace, *, hard_stop_reason: str | None = Non
         "hard_stop_reason": hard_stop_reason,
         "ledger_db": str(args.ledger_db),
         "journal_root": str(args.journal_root),
+        "log_dir": str(log_dir) if log_dir is not None else None,
         "resolution_source": str(getattr(args, "resolution_source", "gamma_ctf")),
+        "brownian_runtime_config": brownian_runtime_config_snapshot(os.environ),
     }
 
 
-def list_recent_journal_events(journal_root: Path) -> list[dict[str, Any]]:
+def brownian_runtime_config_snapshot(env: dict[str, str]) -> dict[str, Any]:
+    raw = {
+        "BTC5M_BROWNIAN_BANKROLL_USD": env.get("BTC5M_BROWNIAN_BANKROLL_USD"),
+        "BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL": env.get("BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL"),
+        "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD": env.get("BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD"),
+        "BTC5M_BROWNIAN_MAX_STAKE_FRACTION": env.get("BTC5M_BROWNIAN_MAX_STAKE_FRACTION"),
+        "BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD": env.get("BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD"),
+    }
+    if env.get("BTC5M_STRATEGY_ID") != "brownian_no_hmm_conservative_v1":
+        return {"raw_env": raw}
+    try:
+        cfg = BrownianConservativeConfig.from_env(env)
+    except Exception as exc:
+        return {"raw_env": raw, "config_error": str(exc)}
+    return {
+        "raw_env": raw,
+        "min_order_notional": cfg.min_order_notional,
+        "min_market_buy_notional_usd": cfg.min_market_buy_notional_usd,
+        "normal_max_stake_fraction": cfg.normal_max_stake_fraction,
+        "small_wallet_threshold": cfg.small_wallet_threshold,
+        "bankroll_usd": _float(env.get("BTC5M_BROWNIAN_BANKROLL_USD")),
+    }
+
+
+def _float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def list_recent_journal_events(journal_root: Path, *, since_ts: str | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if not journal_root.exists():
         return out
+    since_dt = parse_datetime(since_ts) if since_ts else None
     for path in sorted(journal_root.glob("*/execution_events.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip():
                 try:
-                    out.append(json.loads(line))
+                    event = json.loads(line)
                 except json.JSONDecodeError:
-                    pass
+                    continue
+                if since_dt is not None:
+                    event_dt = event_timestamp(event)
+                    if event_dt is None or event_dt < since_dt:
+                        continue
+                out.append(event)
     return out
 
 
-def count_lots_by_status(ledger: LiveLedger, status: str) -> int:
-    with ledger.connect() as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM outcome_lots WHERE status=?", (status,)).fetchone()[0])
+def event_timestamp(event: dict[str, Any]) -> Any:
+    for key in ("execution_ts", "submitted_ts", "fill_ts", "timestamp", "decision_ts", "created_ts", "confirmed_ts"):
+        value = event.get(key)
+        if value:
+            parsed = parse_datetime(value)
+            if parsed is not None:
+                return parsed
+    return None
 
 
-def count_confirmed_redemptions(ledger: LiveLedger) -> int:
+def count_rows_since(ledger: LiveLedger, table: str, ts_column: str, since_ts: str | None) -> int:
+    if since_ts is None:
+        return ledger.count_rows(table)
+    allowed = {
+        ("live_fills", "fill_ts"),
+        ("redemption_attempts", "created_ts"),
+    }
+    if (table, ts_column) not in allowed:
+        raise ValueError("unsupported since counter")
     with ledger.connect() as conn:
-        return int(conn.execute("SELECT COUNT(*) FROM redemption_attempts WHERE status='confirmed'").fetchone()[0])
+        return int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {ts_column} >= ?", (since_ts,)).fetchone()[0])
+
+
+def count_lots_by_status(ledger: LiveLedger, status: str, *, since_ts: str | None = None) -> int:
+    with ledger.connect() as conn:
+        if since_ts is None:
+            return int(conn.execute("SELECT COUNT(*) FROM outcome_lots WHERE status=?", (status,)).fetchone()[0])
+        return int(conn.execute("SELECT COUNT(*) FROM outcome_lots WHERE status=? AND updated_ts >= ?", (status, since_ts)).fetchone()[0])
+
+
+def count_confirmed_redemptions(ledger: LiveLedger, *, since_ts: str | None = None) -> int:
+    with ledger.connect() as conn:
+        if since_ts is None:
+            return int(conn.execute("SELECT COUNT(*) FROM redemption_attempts WHERE status='confirmed'").fetchone()[0])
+        return int(conn.execute("SELECT COUNT(*) FROM redemption_attempts WHERE status='confirmed' AND confirmed_ts >= ?", (since_ts,)).fetchone()[0])
 
 
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:

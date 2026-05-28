@@ -1,7 +1,8 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import run_btc5m_canary_live as live_runner
-from src.runtime.btc5m_brownian_conservative import BrownianConservativeConfig
+from src.runtime.btc5m_brownian_conservative import BrownianConservativeConfig, validate_brownian_runtime_env
 from src.runtime.btc5m_live_input_builder import BTC5MCanaryLiveInputBuilder, LiveInputBuilderConfig
 from src.runtime.btc5m_strategy_router import run_btc5m_strategy_cycle
 
@@ -219,6 +220,47 @@ def test_server_process_brownian_strategy_is_reachable_in_paper_mode(tmp_path: P
     assert result["status"] == "paper_validated"
     assert list((tmp_path / "live").glob("*/*/live_input_state.jsonl"))
     assert list((tmp_path / "live").glob("*/*/decision_state.jsonl"))
+
+
+def test_live_runtime_env_does_not_require_configured_bankroll():
+    errors = validate_brownian_runtime_env(
+        {
+            "BTC5M_STRATEGY_ID": "brownian_no_hmm_conservative_v1",
+            "BTC5M_BROWNIAN_ENABLED": "true",
+            "BTC5M_BROWNIAN_PAPER_ONLY": "false",
+            "BTC5M_BROWNIAN_LIVE_ENABLED": "true",
+            "BTC5M_EXECUTION_MODE": "live",
+            "BTC5M_LIVE_ONE_SHOT": "true",
+            "POLY_WALLET_PRIVATE_KEY": "secret",
+            "BTC5M_EXPECTED_WALLET_ADDRESS": "0xWallet",
+        }
+    )
+    assert "brownian_bankroll_missing_or_invalid" not in errors
+
+
+def test_live_capital_risk_state_uses_pusd_balance_not_env_bankroll(monkeypatch):
+    monkeypatch.setenv("BTC5M_BROWNIAN_BANKROLL_USD", "2000")
+    payload = live_input()
+    cfg_live = cfg(Path("/tmp"), paper_only=False, live_enabled=True, min_order_notional=2.0, normal_max_stake_fraction=0.0025)
+
+    class Adapter:
+        def capital_state(self):
+            return {"pusd_balance": 123.45}
+
+    class Ledger:
+        def open_reserved_pusd(self):
+            return 3.45
+
+        def unredeemed_winning_estimate(self):
+            return 7.0
+
+    reason = live_runner.apply_live_capital_risk_state(payload, SimpleNamespace(adapter=Adapter(), ledger=Ledger()), cfg_live)
+
+    assert reason is None
+    assert payload["risk_state"]["bankroll"] == 120.0
+    assert payload["risk_state"]["available_trade_bankroll"] == 120.0
+    assert payload["risk_state"]["bankroll_source"] == "live_pusd_balance_minus_ledger_reservations"
+    assert payload["live_input_meta"]["capital_state"]["pusd_balance"] == 123.45
 
 
 def test_brownian_live_input_builder_does_not_require_hmm_when_disabled(tmp_path: Path):
