@@ -268,15 +268,15 @@ The Brownian strategy still uses FAK market-order semantics for live canary buys
 
 Do not switch this strategy to passive GTC/GTD limit orders without adding heartbeat, cancel, and stale-order handling.
 
-Venue minimum sizing is configured separately from strategy risk:
+Venue minimum sizing is configured separately from strategy risk. The operator-facing minimum spend cap is:
 
 ```bash
-BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD=5
+BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL=5
 BTC5M_BROWNIAN_MIN_LIMIT_BUY_SIZE_SHARES=5
 BTC5M_BROWNIAN_VENUE_MIN_DISCOVERY_MODE=static
 ```
 
-`BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD` replaces the old placeholder `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL` for FAK market buys. If the venue minimum is lowered, the effective small-wallet threshold is recomputed as:
+`BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL` is applied to FAK market buys and is mirrored internally as `min_market_buy_notional_usd`. `BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD` remains a supported compatibility alias, but `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL` wins if both are set. If the venue minimum is lowered, the effective small-wallet threshold is recomputed as:
 
 `min_market_buy_notional_usd / max_stake_fraction`
 

@@ -59,10 +59,14 @@ class BrownianConservativeConfig:
             raise ValueError(f"unsupported BTC5M_STRATEGY_ID={strategy_id!r}")
         normal_max_stake_fraction = float(source.get("BTC5M_BROWNIAN_MAX_STAKE_FRACTION", "0.0025"))
         min_market_buy_notional = float(
-            source.get("BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD", source.get("BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL", "5"))
+            source.get("BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL", source.get("BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD", "5"))
         )
         small_wallet_threshold = min_market_buy_notional / normal_max_stake_fraction if normal_max_stake_fraction > 0 else float("inf")
-        if "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD" not in source and "BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD" in source:
+        if (
+            "BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL" not in source
+            and "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD" not in source
+            and "BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD" in source
+        ):
             small_wallet_threshold = float(source["BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD"])
         return cls(
             strategy_id=strategy_id,

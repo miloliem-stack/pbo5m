@@ -129,12 +129,26 @@ def test_current_five_dollar_behavior_still_possible_by_env():
     cfg = BrownianConservativeConfig.from_env(
         {
             "BTC5M_STRATEGY_ID": "brownian_no_hmm_conservative_v1",
-            "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD": "5",
+            "BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL": "5",
             "BTC5M_BROWNIAN_MAX_STAKE_FRACTION": "0.0025",
         }
     )
     assert cfg.min_order_notional == 5.0
     assert cfg.small_wallet_threshold == pytest.approx(2000.0)
+
+
+def test_min_order_notional_env_overrides_market_buy_alias():
+    cfg = BrownianConservativeConfig.from_env(
+        {
+            "BTC5M_STRATEGY_ID": "brownian_no_hmm_conservative_v1",
+            "BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL": "2",
+            "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD": "5",
+            "BTC5M_BROWNIAN_MAX_STAKE_FRACTION": "0.0025",
+        }
+    )
+    assert cfg.min_order_notional == 2.0
+    assert cfg.min_market_buy_notional_usd == 2.0
+    assert cfg.small_wallet_threshold == pytest.approx(800.0)
 
 
 def test_live_trading_path_does_not_call_redeemer(tmp_path: Path):
