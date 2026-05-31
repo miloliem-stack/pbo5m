@@ -109,7 +109,8 @@ def test_live_input_builder_missing_quote(tmp_path: Path):
 
     built = _builder(tmp_path, quote_fn=bad_quote).build()
     assert built["ok"] is False
-    assert "quote" in built["missing_components"]
+    assert built["missing_input_reason"] == "quote_both_fetch_failed"
+    assert any("quote" in c for c in built["missing_components"])
 
 
 def test_live_input_builder_missing_hmm(tmp_path: Path):
@@ -167,3 +168,105 @@ def test_live_input_builder_missing_brownian_probability(tmp_path: Path, monkeyp
     built = _builder(tmp_path, brownian_state_path=None).build()
     assert built["ok"] is False
     assert "brownian_probability" in built["missing_components"]
+
+
+# ---- quote diagnostics tests ----
+
+def test_live_input_builder_quote_yes_fetch_failed_specific_reason(tmp_path: Path):
+    """When YES book fails to fetch, missing_input_reason is quote_yes_fetch_failed."""
+    def bad_yes_quote(token_id: str):
+        if token_id == "yes-token":
+            return {"token_id": token_id, "fetch_ok": False, "best_ask": None, "error_kind": "http_error", "http_status": 503, "error": "service unavailable"}
+        return _quote(token_id)
+
+    built = _builder(tmp_path, quote_fn=bad_yes_quote).build()
+    assert built["ok"] is False
+    assert built["missing_input_reason"] == "quote_yes_fetch_failed"
+    assert "quote_yes_fetch_failed" in built["missing_components"]
+
+
+def test_live_input_builder_quote_no_best_ask_missing_specific_reason(tmp_path: Path):
+    """When NO book fetches OK but has no best_ask, missing_input_reason is quote_no_best_ask_missing."""
+    def no_missing_ask(token_id: str):
+        q = dict(_quote(token_id))
+        if token_id == "no-token":
+            q["best_ask"] = None
+        return q
+
+    built = _builder(tmp_path, quote_fn=no_missing_ask).build()
+    assert built["ok"] is False
+    assert built["missing_input_reason"] == "quote_no_best_ask_missing"
+    assert "quote_no_best_ask_missing" in built["missing_components"]
+
+
+def test_live_input_builder_quote_both_fetch_failed(tmp_path: Path):
+    """When both YES and NO fetch fail, reason is quote_both_fetch_failed."""
+    def both_fail(token_id: str):
+        return {"token_id": token_id, "fetch_ok": False, "best_ask": None, "error_kind": "timeout"}
+
+    built = _builder(tmp_path, quote_fn=both_fail).build()
+    assert built["ok"] is False
+    assert built["missing_input_reason"] == "quote_both_fetch_failed"
+
+
+def test_live_input_builder_includes_quote_diagnostics_in_meta_when_ok(tmp_path: Path):
+    """Even on success, live_input_meta includes per-side quote diagnostic fields."""
+    built = _builder(tmp_path).build()
+    assert built["ok"] is True
+    meta = built["input"]["live_input_meta"]
+    assert meta["yes_quote_fetch_ok"] is True
+    assert meta["no_quote_fetch_ok"] is True
+    assert meta["yes_best_ask"] == 0.40
+    assert meta["no_best_ask"] == 0.68
+    assert meta["yes_token_id"] == "yes-token"
+    assert meta["no_token_id"] == "no-token"
+    assert meta["quote_missing_reason"] is None
+
+
+def test_live_input_builder_includes_quote_diagnostics_in_meta_when_failed(tmp_path: Path):
+    """On quote failure, live_input_meta includes error_kind and http_status."""
+    def bad_yes_quote(token_id: str):
+        if token_id == "yes-token":
+            return {"token_id": token_id, "fetch_ok": False, "best_ask": None,
+                    "error_kind": "http_error", "http_status": 503, "error": "bad gateway"}
+        return _quote(token_id)
+
+    built = _builder(tmp_path, quote_fn=bad_yes_quote).build()
+    assert built["ok"] is False
+    meta = built["input"]["live_input_meta"]
+    assert meta["yes_quote_fetch_ok"] is False
+    assert meta["yes_quote_error_kind"] == "http_error"
+    assert meta["yes_quote_http_status"] == 503
+    assert meta["quote_missing_reason"] == "quote_yes_fetch_failed"
+
+
+def test_live_input_builder_quote_missing_near_market_end(tmp_path: Path, monkeypatch):
+    """When market age >= BTC5M_SKIP_IF_QUOTE_MISSING_AFTER_MARKET_AGE_SEC and quote is missing,
+    reason becomes quote_missing_near_market_end."""
+    monkeypatch.setenv("BTC5M_SKIP_IF_QUOTE_MISSING_AFTER_MARKET_AGE_SEC", "120")
+
+    # NOW - 120s puts market at exactly the boundary; use 130s old market
+    old_start = NOW - timedelta(seconds=130)
+    old_end = old_start + timedelta(minutes=5)
+
+    def old_market():
+        return {
+            "market": {
+                "market_id": "m1",
+                "condition_id": "c1",
+                "token_yes": "yes-token",
+                "token_no": "no-token",
+                "start_time": old_start.isoformat(),
+                "end_time": old_end.isoformat(),
+            },
+            "detection_source": "fixture",
+        }
+
+    def fail_quote(token_id: str):
+        return {"token_id": token_id, "fetch_ok": False, "best_ask": None, "error_kind": "timeout"}
+
+    built = _builder(tmp_path, market_fn=old_market, quote_fn=fail_quote).build()
+    assert built["ok"] is False
+    assert built["missing_input_reason"] == "quote_missing_near_market_end"
+    meta = built["input"]["live_input_meta"]
+    assert meta["quote_missing_reason"] == "quote_missing_near_market_end"

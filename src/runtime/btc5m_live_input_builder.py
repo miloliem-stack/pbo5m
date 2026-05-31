@@ -75,9 +75,36 @@ class BTC5MCanaryLiveInputBuilder:
         no_quote = self.quote_fn(str(no_token))
         quote_ts = max(parse_datetime(yes_quote.get("fetched_at")) or now, parse_datetime(no_quote.get("fetched_at")) or now)
         quote_age_ms = max(float(yes_quote.get("age_seconds") or 0.0), float(no_quote.get("age_seconds") or 0.0)) * 1000.0
-        valid_topbook = bool(yes_quote.get("fetch_ok") and no_quote.get("fetch_ok") and yes_quote.get("best_ask") is not None and no_quote.get("best_ask") is not None)
+
+        yes_fetch_ok = bool(yes_quote.get("fetch_ok"))
+        no_fetch_ok = bool(no_quote.get("fetch_ok"))
+        yes_best_ask = _optional_float(yes_quote.get("best_ask"))
+        no_best_ask = _optional_float(no_quote.get("best_ask"))
+        valid_topbook = yes_fetch_ok and no_fetch_ok and yes_best_ask is not None and no_best_ask is not None
+
+        # Compute specific quote missing reason
+        quote_missing_reason: Optional[str] = None
         if not valid_topbook:
-            missing.append("quote")
+            if not yes_fetch_ok and not no_fetch_ok:
+                quote_missing_reason = "quote_both_fetch_failed"
+            elif not yes_fetch_ok:
+                quote_missing_reason = "quote_yes_fetch_failed"
+            elif not no_fetch_ok:
+                quote_missing_reason = "quote_no_fetch_failed"
+            elif yes_best_ask is None and no_best_ask is None:
+                quote_missing_reason = "quote_both_best_ask_missing"
+            elif yes_best_ask is None:
+                quote_missing_reason = "quote_yes_best_ask_missing"
+            else:
+                quote_missing_reason = "quote_no_best_ask_missing"
+
+        market_age_sec = (now - start).total_seconds()
+        skip_quote_age_sec = float(os.environ.get("BTC5M_SKIP_IF_QUOTE_MISSING_AFTER_MARKET_AGE_SEC", "240"))
+
+        if not valid_topbook:
+            if market_age_sec >= skip_quote_age_sec:
+                quote_missing_reason = "quote_missing_near_market_end"
+            missing.append(quote_missing_reason or "quote")
 
         brownian = self.build_brownian_probability(now=now, market_start=start, market_end=end)
         if not brownian.get("ok"):
@@ -130,11 +157,32 @@ class BTC5MCanaryLiveInputBuilder:
                 "hmm_error": hmm.get("missing_input_reason"),
                 "brownian_source": brownian.get("source"),
                 "hmm_source": hmm.get("source"),
+                "yes_quote_fetch_ok": yes_fetch_ok,
+                "no_quote_fetch_ok": no_fetch_ok,
+                "yes_quote_error_kind": yes_quote.get("error_kind"),
+                "no_quote_error_kind": no_quote.get("error_kind"),
+                "yes_quote_error": yes_quote.get("error"),
+                "no_quote_error": no_quote.get("error"),
+                "yes_quote_http_status": yes_quote.get("http_status"),
+                "no_quote_http_status": no_quote.get("http_status"),
+                "yes_best_bid": _optional_float(yes_quote.get("best_bid")),
+                "yes_best_ask": yes_best_ask,
+                "no_best_bid": _optional_float(no_quote.get("best_bid")),
+                "no_best_ask": no_best_ask,
+                "yes_is_empty": yes_quote.get("is_empty"),
+                "no_is_empty": no_quote.get("is_empty"),
+                "yes_is_crossed": yes_quote.get("is_crossed"),
+                "no_is_crossed": no_quote.get("is_crossed"),
+                "yes_response_text_sample": yes_quote.get("response_text_sample"),
+                "no_response_text_sample": no_quote.get("response_text_sample"),
+                "yes_token_id": str(yes_token),
+                "no_token_id": str(no_token),
+                "quote_missing_reason": quote_missing_reason,
             },
         }
         return {
             "ok": not missing,
-            "missing_input_reason": ",".join(missing) if missing else None,
+            "missing_input_reason": missing[0] if len(missing) == 1 else (",".join(missing) if missing else None),
             "missing_components": missing,
             "input": input_payload,
         }

@@ -355,6 +355,15 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
             missing_components=built.get("missing_components") or [],
             brownian_source=((built.get("input") or {}).get("live_input_meta") or {}).get("brownian_source"),
             brownian_error=((built.get("input") or {}).get("live_input_meta") or {}).get("brownian_error"),
+            slug=((built.get("input") or {}).get("market") or {}).get("slug"),
+            market_age_sec=((built.get("input") or {}).get("market") or {}).get("market_age_sec"),
+            market_start_ts=((built.get("input") or {}).get("market") or {}).get("market_start_ts"),
+            market_end_ts=((built.get("input") or {}).get("market") or {}).get("market_end_ts"),
+            yes_quote_fetch_ok=((built.get("input") or {}).get("live_input_meta") or {}).get("yes_quote_fetch_ok"),
+            no_quote_fetch_ok=((built.get("input") or {}).get("live_input_meta") or {}).get("no_quote_fetch_ok"),
+            yes_best_ask=((built.get("input") or {}).get("live_input_meta") or {}).get("yes_best_ask"),
+            no_best_ask=((built.get("input") or {}).get("live_input_meta") or {}).get("no_best_ask"),
+            quote_missing_reason=((built.get("input") or {}).get("live_input_meta") or {}).get("quote_missing_reason"),
         )
         live_logger.write_live_input(built)
         if not built.get("ok"):
