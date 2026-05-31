@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.runtime.env_file import loaded_env_summary, load_default_env_file, load_env_file
+from src.runtime.operator_trace import trace_event, trace_stage_done
 
 load_default_env_file()
 
@@ -102,7 +103,14 @@ class LiveStateLogger:
 
 
 def run(args: argparse.Namespace) -> dict:
+    trace_event(
+        "run_start",
+        max_runtime_sec=float(args.max_runtime_sec),
+        poll_interval_sec=float(args.poll_interval_sec),
+        build_live_input=bool(args.build_live_input),
+    )
     strategy_id = selected_strategy_id()
+    trace_event("selected_strategy_id", strategy_id=strategy_id)
     if strategy_id == BROWNIAN_STRATEGY_ID:
         return run_brownian_strategy(args)
 
@@ -169,16 +177,65 @@ def run(args: argparse.Namespace) -> dict:
 
 
 def run_brownian_strategy(args: argparse.Namespace) -> dict:
+    run_started_mono = time.monotonic()
+    last_stage = "start"
+    iterations = 0
+    deadline_reached = False
+    live_execution_invoked = False
+
+    def _set_stage(stage: str) -> None:
+        nonlocal last_stage
+        last_stage = stage
+
+    _set_stage("brownian_config_load")
+    cfg_start = time.monotonic()
     cfg = BrownianConservativeConfig.from_env()
+    trace_stage_done(
+        "brownian_config_loaded",
+        stage="brownian_config_load",
+        started_mono=cfg_start,
+        strategy_id=cfg.strategy_id,
+        paper_only=cfg.paper_only,
+        live_enabled=cfg.live_enabled,
+        min_order_notional=cfg.min_order_notional,
+        max_stake_fraction=cfg.normal_max_stake_fraction,
+    )
+
+    _set_stage("brownian_env_validation")
+    trace_event("brownian_env_validation_start")
+    env_start = time.monotonic()
     env_errors = validate_brownian_runtime_env()
     if env_errors:
+        trace_stage_done(
+            "brownian_env_validation_refused",
+            stage="brownian_env_validation",
+            started_mono=env_start,
+            errors=env_errors,
+        )
         raise RuntimeError("BTC5M Brownian runtime env refused: " + ", ".join(env_errors))
+    trace_stage_done("brownian_env_validation_ok", stage="brownian_env_validation", started_mono=env_start)
+
     if not args.build_live_input:
-        return {
+        result = {
             "status": "observe_no_decision",
             "strategy_id": BROWNIAN_STRATEGY_ID,
             "note": "Brownian server mode requires --build-live-input so current quote, price, volatility, bankroll, and market-age gates are rebuilt.",
         }
+        trace_event(
+            "runner_exit",
+            final_status=result.get("status"),
+            reason=result.get("reason") or result.get("missing_input_reason") or result.get("reject_reason"),
+            last_stage=last_stage,
+            iterations=iterations,
+            runtime_elapsed_sec=round(max(0.0, time.monotonic() - run_started_mono), 6),
+            deadline_reached=deadline_reached,
+            live_execution_callback_invoked=live_execution_invoked,
+        )
+        return result
+
+    _set_stage("live_input_builder_init")
+    trace_event("live_input_builder_init_start")
+    builder_init_start = time.monotonic()
     live_logger = LiveStateLogger(args.live_log_root)
     builder_cfg = LiveInputBuilderConfig.from_env()
     builder_cfg = LiveInputBuilderConfig(
@@ -189,20 +246,106 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
         require_hmm_state=False,
     )
     builder = BTC5MCanaryLiveInputBuilder(builder_cfg)
+    trace_stage_done(
+        "live_input_builder_init_done",
+        stage="live_input_builder_init",
+        started_mono=builder_init_start,
+        max_quote_age_ms=builder_cfg.max_quote_age_ms,
+        max_state_age_sec=builder_cfg.max_state_age_sec,
+        brownian_state_path=str(builder_cfg.brownian_state_path) if builder_cfg.brownian_state_path is not None else None,
+        hmm_state_path=str(builder_cfg.hmm_state_path) if builder_cfg.hmm_state_path is not None else None,
+    )
+
     executor = None
     execution_callback = None
     if not cfg.paper_only and cfg.live_enabled:
+        _set_stage("executor_init")
+        trace_event("executor_init_start")
+        executor_init_start = time.monotonic()
         exec_config = brownian_execution_config_from_env()
+        trace_event("pyclob_adapter_init_start")
+        adapter_start = time.monotonic()
         adapter = PyClobClientAdapter() if exec_config.execution_mode == "live" else None
+        trace_stage_done(
+            "pyclob_adapter_init_done",
+            stage="pyclob_adapter_init",
+            started_mono=adapter_start,
+            execution_mode=exec_config.execution_mode,
+            adapter_present=adapter is not None,
+        )
         journal = ExecutionJournal(exec_config.journal_root)
+        trace_event("execution_journal_writable_start", journal_root=str(exec_config.journal_root))
+        journal_start = time.monotonic()
         journal.ensure_writable()
+        trace_stage_done("execution_journal_writable_done", stage="execution_journal_writable", started_mono=journal_start)
+        trace_event("ledger_init_start", ledger_path=str(exec_config.ledger_path))
+        ledger_start = time.monotonic()
         ledger = LiveLedger(exec_config.ledger_path)
+        trace_stage_done("ledger_init_done", stage="ledger_init", started_mono=ledger_start)
         executor = CanaryExecutor(exec_config, adapter, journal, ledger=ledger)
-        execution_callback = lambda request: execute_brownian_request_with_canary_route(executor, request)
+        executor.startup_check()
+
+        def _execution_callback(request: dict[str, Any]) -> dict[str, Any]:
+            nonlocal live_execution_invoked
+            live_execution_invoked = True
+            trace_event(
+                "live_execution_callback_start",
+                market_id=request.get("market_id"),
+                market_slug=request.get("market_slug"),
+                side=request.get("side"),
+                notional_usd=request.get("notional_usd"),
+            )
+            cb_start = time.monotonic()
+            try:
+                return execute_brownian_request_with_canary_route(executor, request)
+            finally:
+                trace_stage_done("live_execution_callback_done", stage="live_execution_callback", started_mono=cb_start)
+
+        execution_callback = _execution_callback
+        trace_stage_done(
+            "executor_init_done",
+            stage="executor_init",
+            started_mono=executor_init_start,
+            execution_mode=exec_config.execution_mode,
+            live_trading_enabled=exec_config.live_trading_enabled,
+            max_order_attempts_per_process=exec_config.max_order_attempts_per_process,
+            max_quote_age_ms=exec_config.max_quote_age_ms,
+            journal_root=str(exec_config.journal_root),
+            ledger_path=str(exec_config.ledger_path),
+        )
+
     deadline = time.monotonic() + float(args.max_runtime_sec)
+    trace_event(
+        "loop_start",
+        deadline_mono=round(deadline, 6),
+        max_runtime_sec=float(args.max_runtime_sec),
+        poll_interval_sec=float(args.poll_interval_sec),
+    )
     result: dict[str, Any] = {"status": "no_decision_before_timeout", "strategy_id": BROWNIAN_STRATEGY_ID}
     while time.monotonic() <= deadline:
+        iterations += 1
+        _set_stage("loop_iteration")
+        trace_event(
+            "loop_iteration_start",
+            iteration=iterations,
+            remaining_sec=round(max(0.0, deadline - time.monotonic()), 6),
+        )
+
+        _set_stage("live_input_build")
+        trace_event("live_input_build_start", iteration=iterations)
+        build_start = time.monotonic()
         built = builder.build()
+        trace_stage_done(
+            "live_input_build_done",
+            stage="live_input_build",
+            started_mono=build_start,
+            iteration=iterations,
+            ok=bool(built.get("ok")),
+            missing_input_reason=built.get("missing_input_reason"),
+            missing_components=built.get("missing_components") or [],
+            brownian_source=((built.get("input") or {}).get("live_input_meta") or {}).get("brownian_source"),
+            brownian_error=((built.get("input") or {}).get("live_input_meta") or {}).get("brownian_error"),
+        )
         live_logger.write_live_input(built)
         if not built.get("ok"):
             meta = (built.get("input") or {}).get("live_input_meta") or {}
@@ -215,11 +358,31 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
                 "brownian_source": meta.get("brownian_source"),
                 "hmm_error": meta.get("hmm_error"),
             }
+            _set_stage("sleep")
+            trace_event("sleep_start", reason="live_input_missing", poll_interval_sec=float(args.poll_interval_sec))
+            sleep_start = time.monotonic()
             if not sleep_until_deadline(deadline, args.poll_interval_sec):
+                deadline_reached = True
+                trace_stage_done("sleep_done", stage="sleep", started_mono=sleep_start, deadline_reached=True)
                 break
+            trace_stage_done("sleep_done", stage="sleep", started_mono=sleep_start, deadline_reached=False)
             continue
         if executor is not None:
+            _set_stage("capital_risk_state")
+            trace_event("capital_risk_state_start")
+            capital_start = time.monotonic()
             capital_error = apply_live_capital_risk_state(built["input"], executor, cfg)
+            capital_meta = (built.get("input") or {}).get("live_input_meta", {}).get("capital_state") or {}
+            trace_stage_done(
+                "capital_risk_state_done",
+                stage="capital_risk_state",
+                started_mono=capital_start,
+                capital_error=capital_error,
+                pusd_balance=capital_meta.get("pusd_balance"),
+                reserved_pusd=capital_meta.get("reserved_pusd"),
+                available_trade_bankroll=capital_meta.get("available_trade_bankroll"),
+                unredeemed_winning_estimate=capital_meta.get("unredeemed_winning_estimate"),
+            )
             if capital_error is not None:
                 result = {
                     "status": "live_input_missing",
@@ -228,9 +391,19 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
                     "missing_components": ["live_bankroll"],
                 }
                 live_logger.write_decision(result)
+                _set_stage("sleep")
+                trace_event("sleep_start", reason="capital_risk_state_error", poll_interval_sec=float(args.poll_interval_sec))
+                sleep_start = time.monotonic()
                 if not sleep_until_deadline(deadline, args.poll_interval_sec):
+                    deadline_reached = True
+                    trace_stage_done("sleep_done", stage="sleep", started_mono=sleep_start, deadline_reached=True)
                     break
+                trace_stage_done("sleep_done", stage="sleep", started_mono=sleep_start, deadline_reached=False)
                 continue
+
+        _set_stage("strategy_cycle")
+        trace_event("strategy_cycle_start")
+        cycle_start = time.monotonic()
         routed = run_btc5m_strategy_cycle(
             strategy_id=BROWNIAN_STRATEGY_ID,
             live_input=built["input"],
@@ -238,6 +411,20 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
             brownian_config=cfg,
         )
         result = routed.result
+        trace_stage_done(
+            "strategy_cycle_done",
+            stage="strategy_cycle",
+            started_mono=cycle_start,
+            status=result.get("status"),
+            reason=result.get("reason"),
+            final_decision=(result.get("decision_debug") or {}).get("final_decision"),
+            reject_reason=(result.get("decision_debug") or {}).get("reject_reason") or result.get("reason"),
+            market_id=result.get("market_id"),
+            market_slug=result.get("market_slug"),
+            market_age_seconds=(result.get("decision_debug") or {}).get("market_age_seconds"),
+            chosen_side=result.get("side"),
+            notional_usd=result.get("notional_usd"),
+        )
         live_logger.write_decision(result)
         if result.get("status") in {"submitted_live", "execution_rejected", "execution_error", "paper_validated"}:
             if result.get("status") == "paper_validated":
@@ -245,8 +432,30 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
                     break
             else:
                 break
+
+        _set_stage("sleep")
+        trace_event("sleep_start", reason="loop_poll_interval", poll_interval_sec=float(args.poll_interval_sec))
+        sleep_start = time.monotonic()
         if not sleep_until_deadline(deadline, args.poll_interval_sec):
+            deadline_reached = True
+            trace_stage_done("sleep_done", stage="sleep", started_mono=sleep_start, deadline_reached=True)
             break
+        trace_stage_done("sleep_done", stage="sleep", started_mono=sleep_start, deadline_reached=False)
+
+    if time.monotonic() > deadline:
+        deadline_reached = True
+    if deadline_reached:
+        trace_event("deadline_reached", iterations=iterations)
+    trace_event(
+        "runner_exit",
+        final_status=result.get("status"),
+        reason=result.get("reason") or result.get("missing_input_reason") or result.get("reject_reason"),
+        last_stage=last_stage,
+        iterations=iterations,
+        runtime_elapsed_sec=round(max(0.0, time.monotonic() - run_started_mono), 6),
+        deadline_reached=deadline_reached,
+        live_execution_callback_invoked=live_execution_invoked,
+    )
     return result
 
 
@@ -426,8 +635,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = build_parser().parse_args(argv)
+        trace_event(
+            "args_parsed",
+            env_file=str(args.env_file) if args.env_file is not None else None,
+            build_live_input=bool(args.build_live_input),
+            max_runtime_sec=float(args.max_runtime_sec),
+            poll_interval_sec=float(args.poll_interval_sec),
+            stop_after_first_eligible_decision=bool(args.stop_after_first_eligible_decision),
+        )
         if args.env_file is not None:
+            trace_event("env_file_load_start", env_file=str(args.env_file))
+            env_load_start = time.monotonic()
             loaded = load_env_file(args.env_file, override=False, required=True)
+            trace_stage_done(
+                "env_file_load_done",
+                stage="env_file_load",
+                started_mono=env_load_start,
+                env_file=str(args.env_file),
+                loaded_keys=sorted(loaded),
+            )
             print(json.dumps({"env_file": str(args.env_file), "loaded_keys": sorted(loaded), "loaded": loaded_env_summary(loaded)}, sort_keys=True))
         result = run(args)
     except KeyboardInterrupt:

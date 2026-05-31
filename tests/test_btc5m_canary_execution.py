@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import types
+import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -975,3 +976,44 @@ def test_live_mode_refuses_missing_live_state_files(tmp_path: Path, monkeypatch)
     )
     with pytest.raises(RuntimeError, match="hmm_artifact_unavailable"):
         live_runner.run(_live_args(tmp_path))
+
+
+def test_capital_preflight_trace_emits_skip_reason_without_secrets(tmp_path: Path, monkeypatch):
+    captured: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(canary_execution, "trace_event", lambda event_type, **fields: captured.append((event_type, fields)))
+    monkeypatch.setattr(
+        canary_execution,
+        "trace_stage_done",
+        lambda event_type, **fields: captured.append((event_type, fields)) or 0.0,
+    )
+
+    class Adapter(FakeAdapter):
+        def capital_state(self):
+            return {"pusd_balance": 1.0, "POLY_API_SECRET": "dont-log"}
+
+    class Ledger:
+        def open_reserved_pusd(self):
+            return 0.0
+
+        def unredeemed_winning_estimate(self):
+            return 0.0
+
+    executor = CanaryExecutor(
+        _config(tmp_path),
+        Adapter(),
+        ExecutionJournal(tmp_path),
+        ledger=Ledger(),
+    )
+    intent, _ = _create_intent(_decision(), _config(tmp_path))
+    assert intent is not None
+
+    result = executor._preflight_order(intent)
+
+    assert result is not None
+    assert result.get("skip_reason") == "insufficient_pusd_balance"
+    done_events = [fields for event, fields in captured if event == "preflight_order_done"]
+    assert done_events
+    assert done_events[-1].get("skip_reason") == "insufficient_pusd_balance"
+    encoded = json.dumps(captured)
+    assert "dont-log" not in encoded

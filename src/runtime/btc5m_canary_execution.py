@@ -16,6 +16,7 @@ from typing import Any, Optional, Protocol
 from ..time_utils import isoformat_utc, parse_datetime, utc_now
 from .btc5m_canary_policy import POLICY_ID, CanaryConfig
 from .btc5m_live_ledger import LiveLedger
+from .operator_trace import trace_event, trace_stage_done
 from .polymarket_funder_setup import PolymarketFunderConfig, from_units, make_web3, read_erc20_allowance, read_erc20_balance
 
 
@@ -130,10 +131,14 @@ class ClobOrderAdapter(Protocol):
 class PyClobClientAdapter:
     def __init__(self, *, env: Optional[dict[str, str]] = None) -> None:
         self.env = env if env is not None else os.environ
+        trace_event("pyclob_import_start")
+        import_start = time.monotonic()
         try:
             ClobClient, MarketOrderArgs, OrderArgs, OrderType, PartialCreateOrderOptions, ApiCreds, Side, SignatureTypeV2 = import_clob_v2_sdk()
         except Exception as exc:  # pragma: no cover - depends on live optional dep
+            trace_stage_done("pyclob_import_error", stage="pyclob_import", started_mono=import_start, error=str(exc))
             raise RuntimeError(str(exc)) from exc
+        trace_stage_done("pyclob_import_done", stage="pyclob_import", started_mono=import_start)
         self.ClobClient = ClobClient
         self.MarketOrderArgs = MarketOrderArgs
         self.OrderArgs = OrderArgs
@@ -168,7 +173,19 @@ class PyClobClientAdapter:
         }
         if signature_type_int == 3 and not explicit_funder and not _env_bool(self.env.get("BTC5M_ALLOW_POLY_1271_WALLET_FUNDER", "false")):
             self.adapter_config["credential_error"] = "missing_deposit_wallet_funder"
+
+        trace_event(
+            "clob_client_create_start",
+            host=self.adapter_config.get("host"),
+            chain=self.adapter_config.get("chain"),
+            signature_type=self.adapter_config.get("signature_type"),
+            funder_source=self.adapter_config.get("funder_source"),
+        )
+        client_create_start = time.monotonic()
         self.client = self._make_client(private_key=private_key, creds=None)
+        trace_stage_done("clob_client_create_done", stage="clob_client_create", started_mono=client_create_start)
+
+        trace_event("l2_creds_env_check")
         creds = get_l2_api_creds_from_env(self.env, self.ApiCreds)
         if creds is not None:
             self.adapter_config["l2_credentials_present"] = True
@@ -183,7 +200,17 @@ class PyClobClientAdapter:
         else:
             self.adapter_config["credential_error"] = "missing_clob_l2_credentials"
         if creds is not None:
+            trace_event("l2_creds_attach_start")
+            creds_attach_start = time.monotonic()
             self._attach_api_creds(private_key=private_key, creds=creds)
+            trace_stage_done("l2_creds_attach_done", stage="l2_creds_attach", started_mono=creds_attach_start)
+        trace_event(
+            "adapter_init_done",
+            credential_error=self.adapter_config.get("credential_error"),
+            l2_credentials_present=bool(self.adapter_config.get("l2_credentials_present")),
+            clob_sdk_family=self.adapter_config.get("clob_sdk_family"),
+            clob_sdk_version=self.adapter_config.get("clob_sdk_version"),
+        )
 
     def _make_client(self, *, private_key: str, creds: Any = None) -> Any:
         kwargs = {
@@ -232,6 +259,13 @@ class PyClobClientAdapter:
         buy_side = getattr(self.Side, "BUY", "BUY") if self.Side is not None else "BUY"
         limit_price = float(intent.limit_price or intent.max_price or intent.selected_ask)
         spend_amount = quantize_usd_amount(float(intent.stake_usd))
+        token = str(intent.token_id)
+        trace_event(
+            "submit_buy_start",
+            token_id=f"...{token[-8:]}" if len(token) > 8 else token,
+            notional_usd=spend_amount,
+            limit_price=limit_price,
+        )
         order_args = self.MarketOrderArgs(
             token_id=str(intent.token_id),
             amount=spend_amount,
@@ -239,40 +273,86 @@ class PyClobClientAdapter:
             side=buy_side,
         )
         options = self.PartialCreateOrderOptions(tick_size=str(self.adapter_config.get("tick_size") or "0.01"))
-        result = self.client.create_and_post_market_order(
-            order_args=order_args,
-            options=options,
-            order_type=order_type,
+        trace_event("create_and_post_market_order_start")
+        submit_start = time.monotonic()
+        try:
+            result = self.client.create_and_post_market_order(
+                order_args=order_args,
+                options=options,
+                order_type=order_type,
+            )
+        except Exception as exc:
+            trace_stage_done("submit_buy_error", stage="submit_buy", started_mono=submit_start, error=str(exc))
+            raise
+        normalized = result if isinstance(result, dict) else {"result": result}
+        trace_stage_done(
+            "create_and_post_market_order_done",
+            stage="submit_buy",
+            started_mono=submit_start,
+            order_id=extract_order_id(normalized),
+            order_status=extract_status(normalized),
         )
-        return result if isinstance(result, dict) else {"result": result}
+        return normalized
 
     def preflight_order(self, intent: OrderIntent) -> Optional[dict[str, Any]]:
+        trace_event("preflight_order_start", stake_usd=float(intent.stake_usd))
+        preflight_start = time.monotonic()
+        result: Optional[dict[str, Any]] = None
         if self.adapter_config.get("signature_type") == 3 and self.adapter_config.get("funder_source") != "POLY_FUNDER":
-            return {"skip_reason": "missing_deposit_wallet_funder"}
+            result = {"skip_reason": "missing_deposit_wallet_funder"}
+            trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=result.get("skip_reason"))
+            return result
         if self.adapter_config.get("signature_type") in {0, 1, 2} and self.env.get("POLY_FUNDER") and _env_bool(self.env.get("BTC5M_REJECT_NON_1271_DEPOSIT_FUNDER", "false")):
-            return {"skip_reason": "funder_signature_type_mismatch"}
+            result = {"skip_reason": "funder_signature_type_mismatch"}
+            trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=result.get("skip_reason"))
+            return result
         try:
+            trace_event("web3_make_start")
+            web3_start = time.monotonic()
             web3 = make_web3(self.funder_config)
+            trace_stage_done("web3_make_done", stage="web3_make", started_mono=web3_start)
             funder = self.adapter_config.get("funder")
+
+            trace_event("pusd_balance_read_start")
+            balance_start = time.monotonic()
             balance = read_erc20_balance(web3, self.funder_config.pusd_token_address, funder)
+            trace_stage_done("pusd_balance_read_done", stage="pusd_balance_read", started_mono=balance_start)
             required_units = int(Decimal(str(intent.stake_usd)) * Decimal(10**6))
             if balance is None or balance < required_units:
-                return {
+                result = {
                     "skip_reason": "insufficient_pusd_balance",
                     "pusd_balance": from_units(balance or 0),
                     "required_pusd": float(intent.stake_usd),
                 }
+                trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=result.get("skip_reason"))
+                return result
+
+            trace_event("pusd_allowance_read_start")
+            allowance_start = time.monotonic()
             allowance_result = self._preflight_allowance(web3, funder, required_units)
+            trace_stage_done("pusd_allowance_read_done", stage="pusd_allowance_read", started_mono=allowance_start)
             if allowance_result is not None:
-                return allowance_result
+                result = allowance_result
+                trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=result.get("skip_reason"))
+                return result
         except Exception as exc:
-            return {"skip_reason": "pusd_preflight_unavailable", "raw_error_reason": str(exc)}
+            result = {"skip_reason": "pusd_preflight_unavailable", "raw_error_reason": str(exc)}
+            trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=result.get("skip_reason"))
+            return result
+        trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=None)
         return None
 
     def capital_state(self) -> dict[str, Any]:
+        trace_event("web3_make_start")
+        web3_start = time.monotonic()
         web3 = make_web3(self.funder_config)
+        trace_stage_done("web3_make_done", stage="web3_make", started_mono=web3_start)
         funder = self.adapter_config.get("funder")
+
+        trace_event("pusd_balance_read_start")
+        balance_start = time.monotonic()
         balance = read_erc20_balance(web3, self.funder_config.pusd_token_address, funder)
+        trace_stage_done("pusd_balance_read_done", stage="pusd_balance_read", started_mono=balance_start)
         state = {
             "funder": funder,
             "pusd_balance": from_units(balance or 0),
@@ -280,8 +360,17 @@ class PyClobClientAdapter:
             "pusd_allowance": None,
         }
         if self.funder_config.exchange_address:
+            trace_event("pusd_allowance_read_start")
+            allowance_start = time.monotonic()
             allowance = read_erc20_allowance(web3, self.funder_config.pusd_token_address, funder, self.funder_config.exchange_address)
+            trace_stage_done("pusd_allowance_read_done", stage="pusd_allowance_read", started_mono=allowance_start)
             state["pusd_allowance"] = from_units(allowance or 0)
+        trace_event(
+            "capital_state_done",
+            pusd_balance=state.get("pusd_balance"),
+            pusd_allowance=state.get("pusd_allowance"),
+            allowance_spender=state.get("allowance_spender"),
+        )
         return state
 
     def _preflight_allowance(self, web3: Any, funder: Optional[str], required_units: int) -> Optional[dict[str, Any]]:
@@ -300,8 +389,19 @@ class PyClobClientAdapter:
         return None
 
     def get_order_status(self, order_id: str) -> dict[str, Any]:  # pragma: no cover - live adapter
+        status_start = time.monotonic()
         result = self.client.get_order(order_id)
-        return result if isinstance(result, dict) else {"result": result}
+        normalized = result if isinstance(result, dict) else {"result": result}
+        trace_stage_done(
+            "order_poll_tick",
+            stage="order_poll_tick",
+            started_mono=status_start,
+            order_id=order_id,
+            clob_status=extract_status(normalized),
+            filled_size=extract_float(normalized, "filled_size", "filled_qty", "matched_size", "size_matched"),
+            remaining_size=extract_float(normalized, "remaining_size", "remaining_qty"),
+        )
+        return normalized
 
     def bootstrap_api_creds_once(self) -> Any:
         creds = derive_api_creds(self.client)
@@ -481,9 +581,12 @@ class CanaryExecutor:
         return final_event
 
     def poll_order(self, intent: OrderIntent, order_id: Optional[str]) -> dict[str, Any]:
+        poll_start = time.monotonic()
+        trace_event("order_poll_start", order_id=order_id)
         if not order_id:
             event = self._event("order_unknown_after_submit", intent=intent, raw_error_reason="missing_order_id")
             self.journal.write(event)
+            trace_stage_done("order_poll_done", stage="order_poll", started_mono=poll_start, terminal_event=event.get("event_type"))
             return event
         deadline = time.monotonic() + self.config.order_poll_timeout_sec
         last_event: Optional[dict[str, Any]] = None
@@ -491,6 +594,13 @@ class CanaryExecutor:
             status = self.adapter.get_order_status(order_id) if self.adapter is not None else {"status": "unknown"}
             clob_status = extract_status(status)
             event_type = event_type_for_status(clob_status)
+            trace_event(
+                "order_poll_tick",
+                order_id=order_id,
+                clob_status=clob_status,
+                filled_size=extract_float(status, "filled_size", "filled_qty", "matched_size", "size_matched"),
+                remaining_size=extract_float(status, "remaining_size", "remaining_qty"),
+            )
             event = self._event(
                 event_type,
                 intent=intent,
@@ -506,10 +616,13 @@ class CanaryExecutor:
                 self.ledger.record_order_event(event)
             last_event = event
             if event_type in {"order_filled", "order_partially_filled", "order_rejected", "order_cancelled"}:
+                trace_stage_done("order_poll_done", stage="order_poll", started_mono=poll_start, terminal_event=event_type, order_id=order_id)
                 return event
             self.sleep_fn(self.config.order_poll_interval_sec)
+        trace_event("order_poll_timeout", order_id=order_id)
         event = self._event("order_unknown_after_submit", intent=intent, order_id=order_id, clob_status=last_event.get("clob_status") if last_event else None)
         self.journal.write(event)
+        trace_stage_done("order_poll_done", stage="order_poll", started_mono=poll_start, terminal_event=event.get("event_type"), order_id=order_id)
         return event
 
     def wallet_address(self) -> Optional[str]:
@@ -518,6 +631,8 @@ class CanaryExecutor:
         return os.getenv("POLY_WALLET_ADDRESS")
 
     def _preflight_order(self, intent: OrderIntent) -> Optional[dict[str, Any]]:
+        preflight_start = time.monotonic()
+        trace_event("preflight_order_start", stake_usd=float(intent.stake_usd))
         if self.ledger is not None and self.adapter is not None and hasattr(self.adapter, "capital_state"):
             try:
                 capital = self.adapter.capital_state()  # type: ignore[attr-defined]
@@ -526,17 +641,24 @@ class CanaryExecutor:
                 available = float(capital.get("pusd_balance") or 0.0) - float(reserved or 0.0)
                 if available + 1e-9 < float(intent.stake_usd):
                     reason = "insufficient_pusd_unredeemed_winners_pending" if unredeemed > 0 else "insufficient_pusd_balance"
-                    return {
+                    result = {
                         "skip_reason": reason,
                         "pusd_balance": capital.get("pusd_balance"),
                         "reserved_pusd": reserved,
                         "known_unredeemed_winning_tokens": unredeemed,
                         "available_trade_bankroll": available,
                     }
+                    trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=result.get("skip_reason"))
+                    return result
             except Exception as exc:
-                return {"skip_reason": "capital_preflight_unavailable", "raw_error_reason": str(exc)}
+                result = {"skip_reason": "capital_preflight_unavailable", "raw_error_reason": str(exc)}
+                trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=result.get("skip_reason"))
+                return result
         if self.adapter is not None and hasattr(self.adapter, "preflight_order"):
-            return self.adapter.preflight_order(intent)  # type: ignore[attr-defined]
+            result = self.adapter.preflight_order(intent)  # type: ignore[attr-defined]
+            trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=result.get("skip_reason") if isinstance(result, dict) else None)
+            return result
+        trace_stage_done("preflight_order_done", stage="preflight_order", started_mono=preflight_start, skip_reason=None)
         return None
 
     def _event(self, event_type: str, *, intent: Optional[OrderIntent] = None, decision: Optional[dict[str, Any]] = None, **extra: Any) -> dict[str, Any]:

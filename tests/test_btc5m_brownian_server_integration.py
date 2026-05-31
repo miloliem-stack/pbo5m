@@ -323,3 +323,65 @@ def test_brownian_live_input_builder_does_not_require_hmm_when_disabled(tmp_path
     assert built["ok"] is True
     assert built["missing_components"] == []
     assert built["input"]["hmm_state"] is None
+
+
+def test_run_brownian_strategy_traces_build_and_cycle_events(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BTC5M_OPERATOR_TRACE", "true")
+    monkeypatch.setenv("BTC5M_STRATEGY_ID", "brownian_no_hmm_conservative_v1")
+    monkeypatch.setenv("BTC5M_BROWNIAN_ENABLED", "true")
+    monkeypatch.setenv("BTC5M_BROWNIAN_PAPER_ONLY", "true")
+    monkeypatch.setenv("BTC5M_BROWNIAN_BANKROLL_USD", "2000")
+    monkeypatch.setenv("BTC5M_BROWNIAN_DECISION_LOG", str(tmp_path / "decision_state.jsonl"))
+    monkeypatch.setenv("BTC5M_BROWNIAN_VALIDATION_LOG", str(tmp_path / "order_validation.jsonl"))
+
+    class NoTradeBuilder(FakeBuilder):
+        payload = live_input(price_state={"sigma": None})
+
+    captured: list[tuple[str, dict]] = []
+
+    def _capture(event_type, **fields):
+        captured.append((event_type, fields))
+
+    def _capture_done(event_type, **fields):
+        captured.append((event_type, fields))
+        return 0.0
+
+    monkeypatch.setattr(live_runner, "BTC5MCanaryLiveInputBuilder", NoTradeBuilder)
+    monkeypatch.setattr(live_runner, "trace_event", _capture)
+    monkeypatch.setattr(live_runner, "trace_stage_done", _capture_done)
+    monkeypatch.setattr(live_runner, "sleep_until_deadline", lambda deadline, poll_interval_sec: False)
+
+    result = live_runner.run(args(tmp_path))
+
+    assert result["status"] == "no_trade"
+    event_types = [event for event, _ in captured]
+    assert "live_input_build_start" in event_types
+    assert "live_input_build_done" in event_types
+    assert "strategy_cycle_start" in event_types
+    assert "strategy_cycle_done" in event_types
+
+
+def test_run_brownian_strategy_emits_final_summary_when_timeout_before_decision(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("BTC5M_OPERATOR_TRACE", "true")
+    monkeypatch.setenv("BTC5M_STRATEGY_ID", "brownian_no_hmm_conservative_v1")
+    monkeypatch.setenv("BTC5M_BROWNIAN_ENABLED", "true")
+    monkeypatch.setenv("BTC5M_BROWNIAN_PAPER_ONLY", "true")
+    monkeypatch.setenv("BTC5M_BROWNIAN_BANKROLL_USD", "2000")
+    monkeypatch.setenv("BTC5M_BROWNIAN_DECISION_LOG", str(tmp_path / "decision_state.jsonl"))
+    monkeypatch.setenv("BTC5M_BROWNIAN_VALIDATION_LOG", str(tmp_path / "order_validation.jsonl"))
+
+    captured: list[tuple[str, dict]] = []
+
+    def _capture(event_type, **fields):
+        captured.append((event_type, fields))
+
+    monkeypatch.setattr(live_runner, "trace_event", _capture)
+
+    timeout_args = args(tmp_path)
+    timeout_args.max_runtime_sec = 0
+    result = live_runner.run(timeout_args)
+
+    assert result["status"] == "no_decision_before_timeout"
+    exit_events = [fields for event, fields in captured if event == "runner_exit"]
+    assert exit_events
+    assert exit_events[-1]["final_status"] == "no_decision_before_timeout"
