@@ -148,3 +148,92 @@ def test_decision_log_contains_required_fields(tmp_path: Path):
     written = json.loads((tmp_path / "decision_state.jsonl").read_text().splitlines()[0])
     for key in ["timestamp", "strategy_id", "model_id", "p_yes", "yes_ask", "chosen_side", "stake_notional", "bankroll_before", "should_trade", "reject_reason"]:
         assert key in written
+
+
+# ---- canary force_min_notional override tests ----
+
+def _canary_cfg(**kwargs):
+    """Live canary config with the override enabled for a tiny wallet."""
+    base = {
+        "enabled": True,
+        "paper_only": False,
+        "live_enabled": True,
+        "live_one_shot": True,
+        "min_order_notional": 1.0,
+        "min_market_buy_notional_usd": 1.0,
+        "small_wallet_threshold": 400.0,
+        "small_wallet_max_stake_fraction": 0.0025,
+        "normal_max_stake_fraction": 0.0025,
+        "canary_force_min_notional_enabled": True,
+        "canary_force_min_notional_usd": 1.0,
+        "canary_force_max_wallet_usd": 50.0,
+        "canary_force_max_stake_fraction": 0.10,
+        "canary_force_live_only": True,
+        "canary_force_require_one_shot": True,
+    }
+    base.update(kwargs)
+    return BrownianConservativeConfig(**base)
+
+
+def test_canary_override_disabled_by_default_keeps_below_min_reject():
+    """Default cfg has canary override disabled; tiny wallet still rejects below_min_order_notional."""
+    row = decision(config=cfg(), risk_state=risk(23), quote=quote(yes=0.40, no=0.90), price_state=price(current=100.01, sigma=0.01))
+    assert row["reject_reason"] == "below_min_order_notional"
+    assert row.get("canary_force_min_notional_applied") == False
+    assert row.get("canary_force_min_notional_reject_reason") == "override_disabled"
+
+
+def test_canary_override_applies_for_tiny_live_wallet_when_all_gates_pass():
+    """Canary override kicks in for a ~23 USD wallet when edge/ask/depth/growth all pass."""
+    c = _canary_cfg()
+    row = decision(config=c, risk_state=risk(23.82), quote=quote(yes=0.40, no=0.90), price_state=price(current=100.01, sigma=0.01))
+    assert row["should_trade"], row
+    assert row["canary_force_min_notional_applied"] is True
+    assert row["stake_notional"] == pytest.approx(1.0)
+    assert row["sizing_policy"] == "canary_force_min_notional_override"
+    assert row["canary_force_min_notional_reason"] == "tiny_wallet_live_canary_plumbing_test"
+    assert row["expected_log_growth"] > 0.0
+    assert row["final_decision"] == "BUY_YES"
+
+
+def test_canary_override_does_not_apply_when_edge_fails():
+    """Edge gate fires before sizing; override is never reached."""
+    c = _canary_cfg()
+    row = decision(config=c, risk_state=risk(23.82), quote=quote(yes=0.80, no=0.80), price_state=price(current=100.0, sigma=0.01))
+    assert row["reject_reason"] == "edge_below_threshold"
+    assert row["should_trade"] is False
+
+
+def test_canary_override_does_not_apply_when_growth_fails_after_forced_stake():
+    """Forced stake fraction must still produce positive expected log growth."""
+    # Very high haircut + slippage makes growth negative at forced fraction ~1/23
+    c = _canary_cfg(probability_haircut_abs=0.49, ask_slippage_abs=0.40)
+    row = decision(config=c, risk_state=risk(23.82), quote=quote(yes=0.40, no=0.90), price_state=price(current=100.01, sigma=0.01))
+    assert row["reject_reason"] == "expected_growth_not_positive"
+    assert row["should_trade"] is False
+
+
+def test_canary_override_does_not_apply_above_max_wallet():
+    """Wallet above canary_force_max_wallet_usd → override ineligible."""
+    c = _canary_cfg(canary_force_max_wallet_usd=50.0)
+    row = decision(config=c, risk_state=risk(60.0), quote=quote(yes=0.40, no=0.90), price_state=price(current=100.01, sigma=0.01))
+    assert row["reject_reason"] == "below_min_order_notional"
+    assert row["canary_force_min_notional_reject_reason"] == "wallet_above_force_max"
+
+
+def test_canary_override_does_not_apply_when_forced_notional_exceeds_force_max_fraction():
+    """Forced notional of $1 on a $5 wallet exceeds 10% max stake fraction."""
+    c = _canary_cfg(canary_force_min_notional_usd=1.0, canary_force_max_stake_fraction=0.10)
+    row = decision(config=c, risk_state=risk(5.0), quote=quote(yes=0.40, no=0.90), price_state=price(current=100.01, sigma=0.01))
+    assert row["reject_reason"] == "below_min_order_notional"
+    assert row["canary_force_min_notional_reject_reason"] == "forced_notional_exceeds_force_max_stake_fraction"
+
+
+def test_canary_override_does_not_apply_when_depth_cap_insufficient():
+    """Forced notional of $1 must fit within depth cap."""
+    c = _canary_cfg()
+    # depth cap of $0.50 (yes_cap=0.50 in dollars)
+    row = decision(config=c, risk_state=risk(23.82), quote=quote(yes=0.40, no=0.90, yes_cap=0.50), price_state=price(current=100.01, sigma=0.01))
+    assert row["reject_reason"] == "below_min_order_notional"
+    assert row["canary_force_min_notional_reject_reason"] == "forced_notional_exceeds_depth_cap"
+

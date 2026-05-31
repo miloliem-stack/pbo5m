@@ -199,6 +199,9 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
         live_enabled=cfg.live_enabled,
         min_order_notional=cfg.min_order_notional,
         max_stake_fraction=cfg.normal_max_stake_fraction,
+        canary_force_min_notional_enabled=cfg.canary_force_min_notional_enabled,
+        canary_force_min_notional_usd=cfg.canary_force_min_notional_usd if cfg.canary_force_min_notional_enabled else None,
+        canary_force_max_wallet_usd=cfg.canary_force_max_wallet_usd if cfg.canary_force_min_notional_enabled else None,
     )
 
     _set_stage("brownian_env_validation")
@@ -431,6 +434,11 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
             market_age_seconds=(result.get("decision_debug") or {}).get("market_age_seconds"),
             chosen_side=result.get("side"),
             notional_usd=result.get("notional_usd"),
+            sizing_policy=(result.get("decision_debug") or {}).get("sizing_policy"),
+            canary_force_min_notional_applied=(result.get("decision_debug") or {}).get("canary_force_min_notional_applied"),
+            stake_fraction=(result.get("decision_debug") or {}).get("stake_fraction"),
+            stake_notional=(result.get("decision_debug") or {}).get("stake_notional"),
+            expected_log_growth=(result.get("decision_debug") or {}).get("expected_log_growth"),
         )
         live_logger.write_decision(result)
         if result.get("status") in {"submitted_live", "execution_rejected", "execution_error", "paper_validated"}:

@@ -158,12 +158,29 @@ def validate_brownian_order_intent(input: BrownianOrderValidationInput) -> Brown
     if stake > bankroll:
         return _reject("stake_above_bankroll", debug | {"stake": stake, "bankroll": bankroll})
     max_fraction = cfg.normal_max_stake_fraction
-    if stake > max_fraction * bankroll + 1e-9:
-        return _reject("stake_above_max_fraction", debug | {"stake": stake, "bankroll": bankroll, "max_stake_fraction": max_fraction})
-    if bankroll < cfg.small_wallet_threshold and stake < cfg.min_order_notional:
-        return _reject("below_min_order_notional", debug | {"stake": stake, "min_order_notional": cfg.min_order_notional, "bankroll": bankroll})
-    if bankroll >= cfg.small_wallet_threshold and cfg.min_order_notional > max_fraction * bankroll + 1e-9 and stake <= cfg.min_order_notional:
-        return _reject("below_min_order_notional", debug | {"stake": stake, "min_order_notional": cfg.min_order_notional, "bankroll": bankroll})
+    canary_applied = bool(_value(intent, decision, "canary_force_min_notional_applied"))
+    if canary_applied:
+        if not cfg.canary_force_min_notional_enabled:
+            return _reject("stake_above_max_fraction", debug | {"canary_override_rejected": "override_not_enabled_in_config"})
+        if cfg.canary_force_live_only and input.paper_only:
+            return _reject("stake_above_max_fraction", debug | {"canary_override_rejected": "paper_mode"})
+        if cfg.canary_force_live_only and not input.live_enabled:
+            return _reject("stake_above_max_fraction", debug | {"canary_override_rejected": "live_not_enabled"})
+        if cfg.canary_force_require_one_shot and not cfg.live_one_shot:
+            return _reject("stake_above_max_fraction", debug | {"canary_override_rejected": "not_live_one_shot"})
+        if bankroll > cfg.canary_force_max_wallet_usd:
+            return _reject("stake_above_max_fraction", debug | {"canary_override_rejected": "wallet_above_force_max"})
+        if stake > cfg.canary_force_min_notional_usd + 1e-9:
+            return _reject("stake_above_max_fraction", debug | {"canary_override_rejected": "stake_exceeds_forced_notional"})
+        if stake > bankroll * cfg.canary_force_max_stake_fraction + 1e-9:
+            return _reject("stake_above_max_fraction", debug | {"canary_override_rejected": "forced_notional_exceeds_force_max_stake_fraction"})
+    else:
+        if stake > max_fraction * bankroll + 1e-9:
+            return _reject("stake_above_max_fraction", debug | {"stake": stake, "bankroll": bankroll, "max_stake_fraction": max_fraction})
+        if bankroll < cfg.small_wallet_threshold and stake < cfg.min_order_notional:
+            return _reject("below_min_order_notional", debug | {"stake": stake, "min_order_notional": cfg.min_order_notional, "bankroll": bankroll})
+        if bankroll >= cfg.small_wallet_threshold and cfg.min_order_notional > max_fraction * bankroll + 1e-9 and stake <= cfg.min_order_notional:
+            return _reject("below_min_order_notional", debug | {"stake": stake, "min_order_notional": cfg.min_order_notional, "bankroll": bankroll})
     if stake > depth_cap + 1e-9:
         return _reject("stake_above_depth", debug | {"stake": stake, "top10_depth_cap": depth_cap})
 
@@ -213,6 +230,10 @@ def validate_brownian_order_intent(input: BrownianOrderValidationInput) -> Brown
         "decision_age_seconds": decision_age,
         "market_age_seconds": market_age,
         "seconds_to_expiry": seconds_to_expiry,
+        "canary_force_min_notional_applied": canary_applied,
+        "canary_force_min_notional_reason": _value(intent, decision, "canary_force_min_notional_reason") if canary_applied else None,
+        "forced_notional_usd": cfg.canary_force_min_notional_usd if canary_applied else None,
+        "forced_stake_fraction": stake / bankroll if canary_applied else None,
     }
     normalized = {
         "strategy_id": STRATEGY_ID,

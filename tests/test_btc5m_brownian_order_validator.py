@@ -219,3 +219,109 @@ def test_normalized_intent_and_log_row_have_audit_fields(tmp_path: Path):
     validate_and_log_brownian_order_intent(vin(), path=path)
     written = json.loads(path.read_text().splitlines()[0])
     assert written["accepted"] is True
+
+
+# ---- canary force_min_notional validator tests ----
+
+def _canary_cfg_v(**kwargs):
+    """Live canary config for validator tests with override enabled."""
+    base = {
+        "enabled": True,
+        "paper_only": False,
+        "live_enabled": True,
+        "live_one_shot": True,
+        "min_order_notional": 1.0,
+        "min_market_buy_notional_usd": 1.0,
+        "small_wallet_threshold": 400.0,
+        "small_wallet_max_stake_fraction": 0.0025,
+        "normal_max_stake_fraction": 0.0025,
+        "canary_force_min_notional_enabled": True,
+        "canary_force_min_notional_usd": 1.0,
+        "canary_force_max_wallet_usd": 50.0,
+        "canary_force_max_stake_fraction": 0.10,
+        "canary_force_live_only": True,
+        "canary_force_require_one_shot": True,
+    }
+    base.update(kwargs)
+    return BrownianConservativeConfig(**base)
+
+
+def _canary_decision(bankroll=23.82, config=None):
+    """Produce a decision row with canary override applied."""
+    c = config or _canary_cfg_v()
+    row = decide_brownian_conservative(
+        market=market(),
+        quote=quote(),
+        price_state=price(),
+        risk_state=risk(bankroll),
+        config=c,
+        decision_ts="2026-05-24T10:01:30Z",
+    )
+    assert row.get("canary_force_min_notional_applied"), f"Expected canary applied, got: {row}"
+    return row
+
+
+def test_validator_accepts_canary_override_when_all_safety_checks_pass():
+    """Validator accepts a canary-override order when all conditions hold."""
+    c = _canary_cfg_v()
+    bankroll = 23.82
+    row = _canary_decision(bankroll=bankroll, config=c)
+    result = validate_brownian_order_intent(BrownianOrderValidationInput(
+        order_intent=row["order_intent"],
+        decision_row=row,
+        current_market_snapshot=snapshot(),
+        bankroll=bankroll,
+        already_traded_market=False,
+        paper_only=False,
+        live_enabled=True,
+        config=c,
+        now_ts=NOW,
+    ))
+    assert result.accepted, result.reject_reason
+    assert result.normalized_order_intent["executable_live"] is True
+    assert result.validation_debug["canary_force_min_notional_applied"] is True
+    assert result.validation_debug["forced_notional_usd"] == pytest.approx(1.0)
+    assert result.validation_debug["forced_stake_fraction"] == pytest.approx(1.0 / bankroll)
+
+
+def test_validator_rejects_canary_override_when_live_one_shot_false():
+    """Validator rejects when config.live_one_shot=False and canary_force_require_one_shot=True."""
+    c_strategy = _canary_cfg_v()  # used to produce row (live_one_shot=True → override applied)
+    row = _canary_decision(config=c_strategy)
+    # Validator config has live_one_shot=False
+    c_val = _canary_cfg_v(live_one_shot=False)
+    result = validate_brownian_order_intent(BrownianOrderValidationInput(
+        order_intent=row["order_intent"],
+        decision_row=row,
+        current_market_snapshot=snapshot(),
+        bankroll=23.82,
+        already_traded_market=False,
+        paper_only=False,
+        live_enabled=True,
+        config=c_val,
+        now_ts=NOW,
+    ))
+    assert not result.accepted
+    assert result.reject_reason == "stake_above_max_fraction"
+    assert result.validation_debug.get("canary_override_rejected") == "not_live_one_shot"
+
+
+def test_validator_rejects_canary_override_when_override_not_enabled_in_config():
+    """Validator rejects when override was applied at decision time but config now has it disabled."""
+    c_strategy = _canary_cfg_v()
+    row = _canary_decision(config=c_strategy)
+    c_val = _canary_cfg_v(canary_force_min_notional_enabled=False)
+    result = validate_brownian_order_intent(BrownianOrderValidationInput(
+        order_intent=row["order_intent"],
+        decision_row=row,
+        current_market_snapshot=snapshot(),
+        bankroll=23.82,
+        already_traded_market=False,
+        paper_only=False,
+        live_enabled=True,
+        config=c_val,
+        now_ts=NOW,
+    ))
+    assert not result.accepted
+    assert result.reject_reason == "stake_above_max_fraction"
+    assert result.validation_debug.get("canary_override_rejected") == "override_not_enabled_in_config"

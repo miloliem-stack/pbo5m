@@ -50,6 +50,13 @@ class BrownianConservativeConfig:
     max_decision_staleness_seconds: float = 3.0
     decision_log_path: Path = DECISION_LOG
     validation_log_path: Path = VALIDATION_LOG
+    live_one_shot: bool = True
+    canary_force_min_notional_enabled: bool = False
+    canary_force_min_notional_usd: float = 1.0
+    canary_force_max_wallet_usd: float = 50.0
+    canary_force_max_stake_fraction: float = 0.10
+    canary_force_live_only: bool = True
+    canary_force_require_one_shot: bool = True
 
     @classmethod
     def from_env(cls, env: Optional[dict[str, str]] = None) -> "BrownianConservativeConfig":
@@ -92,6 +99,13 @@ class BrownianConservativeConfig:
             max_decision_staleness_seconds=float(source.get("BTC5M_BROWNIAN_MAX_DECISION_STALENESS_SECONDS", "3.0")),
             decision_log_path=Path(source.get("BTC5M_BROWNIAN_DECISION_LOG", str(DECISION_LOG))),
             validation_log_path=Path(source.get("BTC5M_BROWNIAN_VALIDATION_LOG", str(VALIDATION_LOG))),
+            live_one_shot=_env_bool(source.get("BTC5M_LIVE_ONE_SHOT", "true")),
+            canary_force_min_notional_enabled=_env_bool(source.get("BTC5M_BROWNIAN_CANARY_FORCE_MIN_NOTIONAL_ENABLED", "false")),
+            canary_force_min_notional_usd=float(source.get("BTC5M_BROWNIAN_CANARY_FORCE_MIN_NOTIONAL_USD", "1.0")),
+            canary_force_max_wallet_usd=float(source.get("BTC5M_BROWNIAN_CANARY_FORCE_MAX_WALLET_USD", "50.0")),
+            canary_force_max_stake_fraction=float(source.get("BTC5M_BROWNIAN_CANARY_FORCE_MAX_STAKE_FRACTION", "0.10")),
+            canary_force_live_only=_env_bool(source.get("BTC5M_BROWNIAN_CANARY_FORCE_LIVE_ONLY", "true")),
+            canary_force_require_one_shot=_env_bool(source.get("BTC5M_BROWNIAN_CANARY_FORCE_REQUIRE_ONE_SHOT", "true")),
         )
 
     def config_hash(self) -> str:
@@ -152,13 +166,13 @@ def compute_conservative_stake(
     rounded_to_min_order = False
     if stake < config.min_order_notional:
         if config.skip_below_min_order and bankroll < config.small_wallet_threshold:
-            return _stake_result(0.0, stake_fraction, full, depth_cap, False, "below_min_order_notional", bankroll)
+            return _try_canary_override(full, depth_cap, bankroll, config)
         if config.min_order_notional <= active_max_fraction * bankroll:
             stake = config.min_order_notional
             stake_fraction = stake / bankroll if bankroll else 0.0
             rounded_to_min_order = True
         else:
-            return _stake_result(stake, stake_fraction, full, depth_cap, False, "below_min_order_notional", bankroll)
+            return _try_canary_override(full, depth_cap, bankroll, config)
     capacity_bound = math.isfinite(depth_cap) and stake > depth_cap
     if capacity_bound:
         stake = depth_cap
@@ -358,7 +372,7 @@ def _top_depth_cap(quote: dict[str, Any], side: str, top_n: int) -> float:
     return explicit if explicit is not None else cap
 
 
-def _stake_result(stake: float, fraction: float, full: float, depth_cap: float, capacity_bound: bool, reason: Optional[str], bankroll: float) -> dict[str, Any]:
+def _stake_result(stake: float, fraction: float, full: float, depth_cap: float, capacity_bound: bool, reason: Optional[str], bankroll: float, *, canary_force_min_notional_reject_reason: Optional[str] = None) -> dict[str, Any]:
     return {
         "stake_notional": float(stake),
         "stake_fraction": float(fraction),
@@ -366,6 +380,46 @@ def _stake_result(stake: float, fraction: float, full: float, depth_cap: float, 
         "capacity_bound": bool(capacity_bound),
         "depth_utilization": float(stake / depth_cap) if depth_cap and math.isfinite(depth_cap) else None,
         "reject_reason": reason,
+        "sizing_policy": None,
+        "canary_force_min_notional_applied": False,
+        "canary_force_min_notional_reason": None,
+        "canary_force_min_notional_reject_reason": canary_force_min_notional_reject_reason,
+    }
+
+
+def _try_canary_override(full_kelly: float, depth_cap: float, bankroll: float, config: "BrownianConservativeConfig") -> dict[str, Any]:
+    """Attempt the canary_force_min_notional_override when conservative sizing falls below min_order_notional."""
+
+    def _reject_override(reason: str) -> dict[str, Any]:
+        return _stake_result(0.0, 0.0, full_kelly, depth_cap, False, "below_min_order_notional", bankroll,
+                             canary_force_min_notional_reject_reason=reason)
+
+    if not config.canary_force_min_notional_enabled:
+        return _reject_override("override_disabled")
+    if config.canary_force_live_only and config.paper_only:
+        return _reject_override("paper_mode")
+    if config.canary_force_live_only and not config.live_enabled:
+        return _reject_override("live_not_enabled")
+    if config.canary_force_require_one_shot and not config.live_one_shot:
+        return _reject_override("not_live_one_shot")
+    if bankroll > config.canary_force_max_wallet_usd:
+        return _reject_override("wallet_above_force_max")
+    forced = config.canary_force_min_notional_usd
+    if forced <= 0:
+        return _reject_override("invalid_forced_notional")
+    if forced > bankroll * config.canary_force_max_stake_fraction:
+        return _reject_override("forced_notional_exceeds_force_max_stake_fraction")
+    if math.isfinite(depth_cap) and forced > depth_cap:
+        return _reject_override("forced_notional_exceeds_depth_cap")
+    if forced < config.min_order_notional:
+        return _reject_override("forced_notional_below_venue_floor")
+    forced_fraction = forced / bankroll if bankroll else 0.0
+    return {
+        **_stake_result(forced, forced_fraction, full_kelly, depth_cap, False, None, bankroll),
+        "rounded_to_min_order": True,
+        "canary_force_min_notional_applied": True,
+        "canary_force_min_notional_reason": "tiny_wallet_live_canary_plumbing_test",
+        "sizing_policy": "canary_force_min_notional_override",
     }
 
 
@@ -468,7 +522,13 @@ def validate_brownian_runtime_env(env: Optional[dict[str, str]] = None) -> list[
     if cfg.live_enabled and not live_one_shot and not allow_continuous_live:
         errors.append("continuous_live_blocked")
     if bankroll > 0 and bankroll < cfg.small_wallet_threshold and cfg.min_order_notional > cfg.small_wallet_max_stake_fraction * bankroll:
-        errors.append("small_wallet_min_order_violates_max_stake_fraction")
+        canary_handles_it = (
+            cfg.canary_force_min_notional_enabled
+            and bankroll <= cfg.canary_force_max_wallet_usd
+            and cfg.canary_force_min_notional_usd <= cfg.canary_force_max_stake_fraction * bankroll
+        )
+        if not canary_handles_it:
+            errors.append("small_wallet_min_order_violates_max_stake_fraction")
     if cfg.live_enabled:
         private_key = str(source.get("POLY_WALLET_PRIVATE_KEY", "")).strip()
         expected_wallet = str(source.get("BTC5M_EXPECTED_WALLET_ADDRESS", "")).strip()
