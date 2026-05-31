@@ -135,7 +135,8 @@ def run(args: argparse.Namespace) -> dict:
                     "missing_input_reason": built.get("missing_input_reason"),
                     "missing_components": built.get("missing_components") or [],
                 }
-                time.sleep(float(args.poll_interval_sec))
+                if not sleep_until_deadline(deadline, args.poll_interval_sec):
+                    break
                 continue
             decision = build_policy_decision(built["input"], config)
             live_logger.write_decision(decision)
@@ -162,7 +163,8 @@ def run(args: argparse.Namespace) -> dict:
             break
         if args.stop_after_first_eligible_decision and eligible_decision:
             break
-        time.sleep(float(args.poll_interval_sec))
+        if not sleep_until_deadline(deadline, args.poll_interval_sec):
+            break
     return result
 
 
@@ -213,7 +215,8 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
                 "brownian_source": meta.get("brownian_source"),
                 "hmm_error": meta.get("hmm_error"),
             }
-            time.sleep(float(args.poll_interval_sec))
+            if not sleep_until_deadline(deadline, args.poll_interval_sec):
+                break
             continue
         if executor is not None:
             capital_error = apply_live_capital_risk_state(built["input"], executor, cfg)
@@ -225,7 +228,8 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
                     "missing_components": ["live_bankroll"],
                 }
                 live_logger.write_decision(result)
-                time.sleep(float(args.poll_interval_sec))
+                if not sleep_until_deadline(deadline, args.poll_interval_sec):
+                    break
                 continue
         routed = run_btc5m_strategy_cycle(
             strategy_id=BROWNIAN_STRATEGY_ID,
@@ -241,8 +245,18 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
                     break
             else:
                 break
-        time.sleep(float(args.poll_interval_sec))
+        if not sleep_until_deadline(deadline, args.poll_interval_sec):
+            break
     return result
+
+
+def sleep_until_deadline(deadline: float, poll_interval_sec: float) -> bool:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False
+    interval = max(0.0, float(poll_interval_sec))
+    time.sleep(min(interval, remaining))
+    return time.monotonic() <= deadline
 
 
 def apply_live_capital_risk_state(input_payload: dict[str, Any], executor: CanaryExecutor, cfg: BrownianConservativeConfig) -> str | None:
@@ -416,6 +430,9 @@ def main(argv: Optional[list[str]] = None) -> int:
             loaded = load_env_file(args.env_file, override=False, required=True)
             print(json.dumps({"env_file": str(args.env_file), "loaded_keys": sorted(loaded), "loaded": loaded_env_summary(loaded)}, sort_keys=True))
         result = run(args)
+    except KeyboardInterrupt:
+        print(json.dumps({"status": "interrupted", "strategy_id": os.environ.get("BTC5M_STRATEGY_ID")}, indent=2, sort_keys=True))
+        return 130
     except Exception as exc:
         print(f"btc5m canary live runner failed: {exc}", file=sys.stderr)
         return 2

@@ -838,6 +838,25 @@ def test_autonomous_runner_live_mode_with_mocked_buy_calls_executor_once(tmp_pat
     assert len(adapter.submits) == 1
 
 
+def test_runner_sleep_is_bounded_by_remaining_runtime(monkeypatch):
+    sleeps = []
+    times = iter([100.0, 100.0, 109.0])
+    monkeypatch.setattr(live_runner.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(live_runner.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert live_runner.sleep_until_deadline(110.0, 999.0) is True
+    assert sleeps == [10.0]
+
+
+def test_runner_sleep_returns_false_after_deadline(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(live_runner.time, "monotonic", lambda: 111.0)
+    monkeypatch.setattr(live_runner.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    assert live_runner.sleep_until_deadline(110.0, 1.0) is False
+    assert sleeps == []
+
+
 class FakeLiveInputBuilder:
     next_payload = None
 
