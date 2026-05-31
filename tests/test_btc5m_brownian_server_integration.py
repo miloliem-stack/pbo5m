@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -263,17 +264,68 @@ def test_live_capital_risk_state_uses_pusd_balance_not_env_bankroll(monkeypatch)
     assert payload["live_input_meta"]["capital_state"]["pusd_balance"] == 123.45
 
 
-def test_brownian_execution_config_ignores_legacy_hmm_notional_caps(monkeypatch):
+def test_brownian_execution_config_reads_notional_caps_from_env(monkeypatch):
     monkeypatch.setenv("BTC5M_EXECUTION_MODE", "live")
     monkeypatch.setenv("BTC5M_BROWNIAN_LIVE_ENABLED", "true")
     monkeypatch.setenv("BTC5M_MAX_NOTIONAL_PER_MARKET_USD", "5")
-    monkeypatch.setenv("BTC5M_MAX_DAILY_NOTIONAL_USD", "5")
+    monkeypatch.setenv("BTC5M_MAX_DAILY_NOTIONAL_USD", "20")
 
     config = live_runner.brownian_execution_config_from_env()
 
-    assert config.max_notional_per_market_usd is None
-    assert config.max_daily_notional_usd is None
+    assert config.max_notional_per_market_usd == 5.0
+    assert config.max_daily_notional_usd == 20.0
     assert config.canary_stake_usd == 1.0
+
+
+def test_brownian_execution_config_defaults_max_notional_to_stake(monkeypatch):
+    """Without BTC5M_MAX_NOTIONAL_PER_MARKET_USD, max_notional defaults to canary_stake_usd
+    so startup_check does not refuse with invalid_max_notional_per_market."""
+    monkeypatch.delenv("BTC5M_MAX_NOTIONAL_PER_MARKET_USD", raising=False)
+    monkeypatch.delenv("BTC5M_MAX_DAILY_NOTIONAL_USD", raising=False)
+    monkeypatch.delenv("BTC5M_CANARY_STAKE_USD", raising=False)
+
+    config = live_runner.brownian_execution_config_from_env()
+
+    assert config.canary_stake_usd == 1.0
+    assert config.max_notional_per_market_usd == config.canary_stake_usd
+    assert config.max_daily_notional_usd is None
+
+
+def test_brownian_execution_config_refuses_when_max_notional_below_stake(monkeypatch, tmp_path):
+    """If operator explicitly sets max_notional below stake, startup_check still refuses."""
+    monkeypatch.setenv("BTC5M_CANARY_STAKE_USD", "2.0")
+    monkeypatch.setenv("BTC5M_MAX_NOTIONAL_PER_MARKET_USD", "1.0")
+    monkeypatch.setenv("BTC5M_EXECUTION_MODE", "live")
+    monkeypatch.setenv("BTC5M_BROWNIAN_LIVE_ENABLED", "true")
+
+    config = live_runner.brownian_execution_config_from_env()
+
+    assert config.canary_stake_usd == 2.0
+    assert config.max_notional_per_market_usd == 1.0
+    # Verify startup_check raises due to invalid_max_notional_per_market
+    from src.runtime.btc5m_canary_execution import CanaryExecutor, ExecutionConfig as ExecCfg, ExecutionJournal
+    exec_cfg = ExecCfg(
+        execution_mode="live",
+        live_trading_enabled=True,
+        live_one_shot=True,
+        max_order_attempts_per_process=1,
+        canary_stake_usd=2.0,
+        max_notional_per_market_usd=1.0,
+        max_daily_notional_usd=None,
+        max_open_positions=1,
+        one_entry_per_market=True,
+        expected_wallet_address=None,
+        order_poll_timeout_sec=20.0,
+        order_poll_interval_sec=1.0,
+        max_quote_age_ms=5000.0,
+        max_price_slippage=0.01,
+        max_limit_price=0.99,
+        journal_root=tmp_path / "journal",
+    )
+    journal = ExecutionJournal(tmp_path / "journal")
+    executor = CanaryExecutor(exec_cfg, adapter=None, journal=journal)
+    with pytest.raises(RuntimeError, match="invalid_max_notional_per_market"):
+        executor.startup_check()
 
 
 def test_brownian_live_input_builder_does_not_require_hmm_when_disabled(tmp_path: Path):

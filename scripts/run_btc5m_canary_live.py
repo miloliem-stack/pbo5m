@@ -263,6 +263,13 @@ def run_brownian_strategy(args: argparse.Namespace) -> dict:
         trace_event("executor_init_start")
         executor_init_start = time.monotonic()
         exec_config = brownian_execution_config_from_env()
+        trace_event(
+            "brownian_exec_config_loaded",
+            canary_stake_usd=exec_config.canary_stake_usd,
+            max_notional_per_market_usd=exec_config.max_notional_per_market_usd,
+            max_daily_notional_usd=exec_config.max_daily_notional_usd,
+            execution_mode=exec_config.execution_mode,
+        )
         trace_event("pyclob_adapter_init_start")
         adapter_start = time.monotonic()
         adapter = PyClobClientAdapter() if exec_config.execution_mode == "live" else None
@@ -519,14 +526,19 @@ def apply_live_capital_risk_state(input_payload: dict[str, Any], executor: Canar
 
 def brownian_execution_config_from_env() -> ExecutionConfig:
     env = os.environ
+    canary_stake_usd = float(env.get("BTC5M_CANARY_STAKE_USD", "1.0"))
+    _raw_max_notional = env.get("BTC5M_MAX_NOTIONAL_PER_MARKET_USD")
+    max_notional_per_market_usd = float(_raw_max_notional) if _raw_max_notional is not None else canary_stake_usd
+    _raw_max_daily = env.get("BTC5M_MAX_DAILY_NOTIONAL_USD")
+    max_daily_notional_usd = float(_raw_max_daily) if _raw_max_daily is not None else None
     return ExecutionConfig(
         execution_mode=env.get("BTC5M_EXECUTION_MODE", "observe").strip().lower(),
         live_trading_enabled=str(env.get("BTC5M_BROWNIAN_LIVE_ENABLED", "false")).lower() in {"1", "true", "yes", "on"},
         live_one_shot=str(env.get("BTC5M_LIVE_ONE_SHOT", "true")).lower() in {"1", "true", "yes", "on"},
         max_order_attempts_per_process=int(env.get("BTC5M_MAX_ORDER_ATTEMPTS_PER_PROCESS", "1")),
-        canary_stake_usd=1.0,
-        max_notional_per_market_usd=None,
-        max_daily_notional_usd=None,
+        canary_stake_usd=canary_stake_usd,
+        max_notional_per_market_usd=max_notional_per_market_usd,
+        max_daily_notional_usd=max_daily_notional_usd,
         max_open_positions=int(env.get("BTC5M_MAX_OPEN_POSITIONS", "1")),
         one_entry_per_market=True,
         expected_wallet_address=env.get("BTC5M_EXPECTED_WALLET_ADDRESS"),
