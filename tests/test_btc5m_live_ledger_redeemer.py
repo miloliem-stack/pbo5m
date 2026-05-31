@@ -117,6 +117,33 @@ def test_no_stake_rounds_above_max_fraction_by_default():
     assert sized["stake_notional"] < 1.0
 
 
+def test_brownian_config_defaults_to_one_dollar_venue_minimum():
+    cfg = BrownianConservativeConfig.from_env(
+        {
+            "BTC5M_STRATEGY_ID": "brownian_no_hmm_conservative_v1",
+            "BTC5M_BROWNIAN_MAX_STAKE_FRACTION": "0.0025",
+        }
+    )
+
+    assert cfg.min_order_notional == 1.0
+    assert cfg.min_market_buy_notional_usd == 1.0
+    assert cfg.small_wallet_threshold == pytest.approx(400.0)
+
+
+def test_deprecated_market_buy_alias_still_works_when_primary_missing():
+    cfg = BrownianConservativeConfig.from_env(
+        {
+            "BTC5M_STRATEGY_ID": "brownian_no_hmm_conservative_v1",
+            "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD": "2",
+            "BTC5M_BROWNIAN_MAX_STAKE_FRACTION": "0.0025",
+        }
+    )
+
+    assert cfg.min_order_notional == 2.0
+    assert cfg.min_market_buy_notional_usd == 2.0
+    assert cfg.small_wallet_threshold == pytest.approx(800.0)
+
+
 def test_invalid_order_min_size_is_terminally_classified():
     normalized = normalize_clob_error(Exception("PolyApiException[status_code=400, error_message={'error': 'INVALID_ORDER_MIN_SIZE'}]"))
     assert normalized["error_code"] == "invalid_order_min_size"

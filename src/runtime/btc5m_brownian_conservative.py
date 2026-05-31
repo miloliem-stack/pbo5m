@@ -37,10 +37,10 @@ class BrownianConservativeConfig:
     kelly_multiplier: float = 1.0 / 40.0
     normal_max_stake_fraction: float = 0.0025
     max_depth_utilization: float = 1.0
-    small_wallet_threshold: float = 2000.0
+    small_wallet_threshold: float = 400.0
     small_wallet_max_stake_fraction: float = 0.0025
-    min_order_notional: float = 5.0
-    min_market_buy_notional_usd: float = 5.0
+    min_order_notional: float = 1.0
+    min_market_buy_notional_usd: float = 1.0
     min_limit_buy_size_shares: Optional[float] = None
     venue_min_discovery_mode: str = "static"
     skip_below_min_order: bool = True
@@ -59,7 +59,7 @@ class BrownianConservativeConfig:
             raise ValueError(f"unsupported BTC5M_STRATEGY_ID={strategy_id!r}")
         normal_max_stake_fraction = float(source.get("BTC5M_BROWNIAN_MAX_STAKE_FRACTION", "0.0025"))
         min_market_buy_notional = float(
-            source.get("BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL", source.get("BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD", "5"))
+            source.get("BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL", source.get("BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD", "1"))
         )
         small_wallet_threshold = min_market_buy_notional / normal_max_stake_fraction if normal_max_stake_fraction > 0 else float("inf")
         if (

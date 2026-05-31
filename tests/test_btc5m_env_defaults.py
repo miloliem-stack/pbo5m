@@ -34,3 +34,14 @@ def test_live_wrapper_does_not_echo_secret_values():
     assert "echo \"$POLY_WALLET_PRIVATE_KEY" not in live
     assert "echo \"$POLY_API_SECRET" not in live
     assert "echo \"$POLY_API_PASSPHRASE" not in live
+
+
+def test_brownian_env_examples_use_single_one_dollar_minimum():
+    for filename in [".env.btc5m.brownian.paper.example", ".env.btc5m.brownian.live.example"]:
+        text = (ROOT / filename).read_text(encoding="utf-8")
+
+        assert "BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL=1" in text
+        assert "BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL=5" not in text
+        assert "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD" not in text
+        assert "BTC5M_BROWNIAN_MIN_LIMIT_BUY_SIZE_SHARES" not in text
+        assert "POLY_MARKET_BUY_MIN_SPEND" not in text

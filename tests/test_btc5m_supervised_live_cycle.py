@@ -91,8 +91,29 @@ def test_brownian_runtime_snapshot_uses_min_order_notional_over_alias():
     )
 
     assert snap["min_order_notional"] == 2.0
-    assert snap["min_market_buy_notional_usd"] == 2.0
+    assert snap["deprecated_min_market_buy_notional_usd"] == 2.0
     assert snap["small_wallet_threshold"] == pytest.approx(800.0)
+    assert snap["deprecated_env_warnings"] == [
+        "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD is deprecated; use BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL"
+    ]
+
+
+def test_brownian_runtime_snapshot_reports_effective_sizing_controls():
+    snap = brownian_runtime_config_snapshot(
+        _env(
+            BTC5M_BROWNIAN_BANKROLL_USD="100",
+            BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL="1",
+            BTC5M_BROWNIAN_MAX_STAKE_FRACTION="0.0025",
+            BTC5M_BROWNIAN_KELLY_MULTIPLIER="0.025",
+        )
+    )
+
+    assert snap["min_order_notional"] == 1.0
+    assert snap["normal_max_stake_fraction"] == 0.0025
+    assert snap["kelly_multiplier"] == 0.025
+    assert snap["bankroll_usd"] == 100.0
+    assert snap["max_stake_for_bankroll"] == pytest.approx(0.25)
+    assert "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD" not in snap["raw_env"]
 
 
 def test_refuses_continuous_live():

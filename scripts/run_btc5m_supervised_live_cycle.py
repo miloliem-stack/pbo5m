@@ -243,27 +243,36 @@ def base_summary(
 
 
 def brownian_runtime_config_snapshot(env: dict[str, str]) -> dict[str, Any]:
+    deprecated_alias = env.get("BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD")
     raw = {
         "BTC5M_BROWNIAN_BANKROLL_USD": env.get("BTC5M_BROWNIAN_BANKROLL_USD"),
         "BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL": env.get("BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL"),
-        "BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD": env.get("BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD"),
         "BTC5M_BROWNIAN_MAX_STAKE_FRACTION": env.get("BTC5M_BROWNIAN_MAX_STAKE_FRACTION"),
+        "BTC5M_BROWNIAN_KELLY_MULTIPLIER": env.get("BTC5M_BROWNIAN_KELLY_MULTIPLIER"),
         "BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD": env.get("BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD"),
     }
+    if deprecated_alias is not None:
+        raw["BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD"] = deprecated_alias
     if env.get("BTC5M_STRATEGY_ID") != "brownian_no_hmm_conservative_v1":
         return {"raw_env": raw}
     try:
         cfg = BrownianConservativeConfig.from_env(env)
     except Exception as exc:
         return {"raw_env": raw, "config_error": str(exc)}
-    return {
+    bankroll = _float(env.get("BTC5M_BROWNIAN_BANKROLL_USD"))
+    snapshot = {
         "raw_env": raw,
         "min_order_notional": cfg.min_order_notional,
-        "min_market_buy_notional_usd": cfg.min_market_buy_notional_usd,
         "normal_max_stake_fraction": cfg.normal_max_stake_fraction,
+        "kelly_multiplier": cfg.kelly_multiplier,
         "small_wallet_threshold": cfg.small_wallet_threshold,
-        "bankroll_usd": _float(env.get("BTC5M_BROWNIAN_BANKROLL_USD")),
+        "bankroll_usd": bankroll,
+        "max_stake_for_bankroll": bankroll * cfg.normal_max_stake_fraction if bankroll is not None else None,
     }
+    if deprecated_alias is not None:
+        snapshot["deprecated_env_warnings"] = ["BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD is deprecated; use BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL"]
+        snapshot["deprecated_min_market_buy_notional_usd"] = cfg.min_market_buy_notional_usd
+    return snapshot
 
 
 def _float(value: Any) -> float | None:

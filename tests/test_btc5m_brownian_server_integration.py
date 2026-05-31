@@ -263,6 +263,19 @@ def test_live_capital_risk_state_uses_pusd_balance_not_env_bankroll(monkeypatch)
     assert payload["live_input_meta"]["capital_state"]["pusd_balance"] == 123.45
 
 
+def test_brownian_execution_config_ignores_legacy_hmm_notional_caps(monkeypatch):
+    monkeypatch.setenv("BTC5M_EXECUTION_MODE", "live")
+    monkeypatch.setenv("BTC5M_BROWNIAN_LIVE_ENABLED", "true")
+    monkeypatch.setenv("BTC5M_MAX_NOTIONAL_PER_MARKET_USD", "5")
+    monkeypatch.setenv("BTC5M_MAX_DAILY_NOTIONAL_USD", "5")
+
+    config = live_runner.brownian_execution_config_from_env()
+
+    assert config.max_notional_per_market_usd is None
+    assert config.max_daily_notional_usd is None
+    assert config.canary_stake_usd == 1.0
+
+
 def test_brownian_live_input_builder_does_not_require_hmm_when_disabled(tmp_path: Path):
     brownian_path = tmp_path / "brownian.json"
     brownian_path.write_text(

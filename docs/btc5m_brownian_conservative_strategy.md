@@ -25,8 +25,7 @@ Environment
 - `BTC5M_BROWNIAN_ASK_SLIPPAGE_ABS=0.01`
 - `BTC5M_BROWNIAN_KELLY_MULTIPLIER=0.025`
 - `BTC5M_BROWNIAN_MAX_STAKE_FRACTION=0.0025`
-- `BTC5M_BROWNIAN_SMALL_WALLET_THRESHOLD=2000`
-- `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL=5`
+- `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL=1`
 - `BTC5M_BROWNIAN_TOP_N_LEVELS=10`
 - `BTC5M_BROWNIAN_MAX_DECISION_STALENESS_SECONDS=3.0`
 - `BTC5M_BROWNIAN_MAX_DEPTH_UTILIZATION=1.0`
@@ -255,6 +254,8 @@ Continuous live is blocked by default. To disable one-shot behavior, `BTC5M_ALLO
 
 `BTC5M_BROWNIAN_BANKROLL_USD` is for paper/testing only. Live sizing uses available pUSD from the funder wallet minus ledger reservations. The threshold for placing the venue minimum is `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL / BTC5M_BROWNIAN_MAX_STAKE_FRACTION`; it does not increase risk above the configured max stake fraction.
 
+The old HMM canary variables `BTC5M_MAX_NOTIONAL_PER_MARKET_USD`, `BTC5M_MAX_DAILY_NOTIONAL_USD`, and `BTC5M_CANARY_STAKE_USD` are not Brownian sizing controls.
+
 Venue Minimums, Ledger, And Redemption
 --------------------------------------
 
@@ -271,12 +272,11 @@ Do not switch this strategy to passive GTC/GTD limit orders without adding heart
 Venue minimum sizing is configured separately from strategy risk. The operator-facing minimum spend cap is:
 
 ```bash
-BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL=5
-BTC5M_BROWNIAN_MIN_LIMIT_BUY_SIZE_SHARES=5
+BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL=1
 BTC5M_BROWNIAN_VENUE_MIN_DISCOVERY_MODE=static
 ```
 
-`BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL` is applied to FAK market buys and is mirrored internally as `min_market_buy_notional_usd`. `BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD` remains a supported compatibility alias, but `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL` wins if both are set. If the venue minimum is lowered, the effective small-wallet threshold is recomputed as:
+`BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL` is applied to FAK market buys and is mirrored internally as `min_market_buy_notional_usd`. `BTC5M_BROWNIAN_MIN_MARKET_BUY_NOTIONAL_USD` remains a deprecated compatibility alias for old env files, but `BTC5M_BROWNIAN_MIN_ORDER_NOTIONAL` wins if both are set. If the venue minimum is lowered, the effective small-wallet threshold is recomputed as:
 
 `min_market_buy_notional_usd / max_stake_fraction`
 
