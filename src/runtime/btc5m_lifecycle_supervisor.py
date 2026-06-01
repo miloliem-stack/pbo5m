@@ -1079,6 +1079,8 @@ def _emit_trading_event(
         event["final_decision"] = debug["final_decision"]
     if debug.get("bankroll_before") is not None:
         event["bankroll_usd"] = round(float(debug["bankroll_before"]), 4)
+    if debug.get("bankroll_source"):
+        event["bankroll_source"] = debug["bankroll_source"]
     # Execution outcome
     exec_result = trade.get("execution_result")
     if isinstance(exec_result, dict):

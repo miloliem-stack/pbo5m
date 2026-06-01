@@ -345,7 +345,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     try:
         args = build_parser().parse_args(argv)
         if args.env_file is not None:
-            loaded = load_env_file(args.env_file, override=False, required=True)
+            loaded = load_env_file(args.env_file, override=True, required=True)
             print(
                 json.dumps(
                     {
