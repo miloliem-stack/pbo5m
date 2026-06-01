@@ -146,7 +146,7 @@ def _build_resolution_source() -> Optional[Any]:
     try:
         from src.runtime.btc5m_resolution_source import build_resolution_source
 
-        return build_resolution_source(os.environ)
+        return build_resolution_source(env=os.environ)
     except Exception as exc:
         trace_event("resolution_source_init_skipped", reason=str(exc))
         print(json.dumps({"event": "resolution_source_init_skipped", "reason": str(exc)}))
@@ -160,7 +160,7 @@ def _build_redeem_adapter() -> Optional[Any]:
         from src.runtime.polymarket_funder_setup import PolymarketFunderConfig
 
         funder_cfg = PolymarketFunderConfig.from_env()
-        return PusdCtfRedeemAdapter(funder_cfg)
+        return PusdCtfRedeemAdapter(funder_config=funder_cfg)
     except Exception as exc:
         trace_event("redeem_adapter_init_skipped", reason=str(exc))
         print(json.dumps({"event": "redeem_adapter_init_skipped", "reason": str(exc)}))

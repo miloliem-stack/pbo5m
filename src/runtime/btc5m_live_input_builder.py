@@ -14,7 +14,12 @@ from ..market_router_5m import route_btc_5m_market
 from ..time_utils import isoformat_utc, parse_datetime, utc_now
 from .btc5m_canary_policy import DEFAULT_HMM_MODEL_ID, REQUIRED_PROBABILITY_MODEL_ID
 
-REQUIRED_BROWNIAN_CONVENTIONS = {"replay-matched brownian_zero_drift__rv30", "model_p_yes", "btc5m_replay"}
+REQUIRED_BROWNIAN_CONVENTIONS = {
+    "replay-matched brownian_zero_drift__rv30",
+    "brownian_zero_drift__rv30",
+    "model_p_yes",
+    "btc5m_replay",
+}
 
 
 @dataclass(frozen=True)
