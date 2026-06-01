@@ -367,6 +367,11 @@ def resolution_worker_tick(
                     market_id=lot.get("market_id"),
                     resolved=False,
                 )
+                errors.append({
+                    "condition_id": condition_id,
+                    "error": "not_resolved",
+                    "resolution_result": result if isinstance(result, dict) else vars(result),
+                })
         except Exception as exc:
             errors.append({"condition_id": condition_id, "error": str(exc)})
 

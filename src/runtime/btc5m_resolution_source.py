@@ -105,6 +105,21 @@ class GammaCtfResolutionSource:
         gamma = infer_gamma_resolution(market or {}, allow_weak_mapping=self.allow_weak_gamma_mapping)
         if not gamma.get("resolved"):
             return ResolutionResult(False, gamma_status=gamma.get("status"), error=gamma.get("error") or "gamma_unresolved_or_ambiguous", diagnostics=gamma).as_dict()
+        # Skip on-chain confirmation if POLYGON_RPC is not configured — fall back to
+        # Gamma-only resolution.  Operators can re-enable by setting POLYGON_RPC and
+        # BTC5M_RESOLUTION_REQUIRE_ONCHAIN_CONFIRMATION=true.
+        if self.require_onchain_confirmation and not self.funder_config.polygon_rpc:
+            winning_side = gamma.get("winning_side")
+            if winning_side not in {"YES", "NO"}:
+                return ResolutionResult(False, gamma_status=gamma.get("status"), error="gamma_winning_side_ambiguous", diagnostics=gamma).as_dict()
+            return ResolutionResult(
+                True,
+                winning_side=winning_side,
+                gamma_status=gamma.get("status"),
+                onchain_confirmed=False,
+                source="gamma_only_no_rpc",
+                diagnostics={"gamma": gamma},
+            ).as_dict()
         try:
             onchain = self.read_ctf_payout(condition_id)
         except Exception as exc:
