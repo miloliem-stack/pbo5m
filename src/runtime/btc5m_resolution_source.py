@@ -71,9 +71,18 @@ class GammaCtfResolutionSource:
         self.fail_open = _env_bool(self.env.get("BTC5M_RESOLUTION_FAIL_OPEN", "false"))
         self.allow_weak_gamma_mapping = _env_bool(self.env.get("BTC5M_ALLOW_WEAK_GAMMA_OUTCOME_INDEX_MAPPING", "false"))
         self.funder_config = PolymarketFunderConfig.from_env(self.env)
-        self.web3 = web3 or make_web3(self.funder_config)
+        self._web3_override = web3  # explicit injection (tests / callers)
+        self._web3_instance: Any = None  # lazy-connected
         self.gamma_fetcher = gamma_fetcher or self._fetch_gamma_market
         self.ctf_contract_address = self.env.get("POLY_CTF_CONTRACT_ADDRESS", POLY_CTF_CONTRACT_ADDRESS)
+
+    @property
+    def web3(self) -> Any:
+        if self._web3_override is not None:
+            return self._web3_override
+        if self._web3_instance is None:
+            self._web3_instance = make_web3(self.funder_config)
+        return self._web3_instance
 
     def diagnostics(self) -> dict[str, Any]:
         return {

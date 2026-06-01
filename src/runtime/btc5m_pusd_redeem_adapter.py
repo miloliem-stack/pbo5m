@@ -86,7 +86,16 @@ class PusdCtfRedeemAdapter:
     def __init__(self, *, funder_config: Optional[PolymarketFunderConfig] = None, redeem_config: Optional[RedeemConfig] = None, web3: Any = None) -> None:
         self.funder_config = funder_config or PolymarketFunderConfig.from_env()
         self.redeem_config = redeem_config or RedeemConfig.from_env()
-        self.web3 = web3 or make_web3(self.funder_config)
+        self._web3_override = web3
+        self._web3_instance: Any = None
+
+    @property
+    def web3(self) -> Any:
+        if self._web3_override is not None:
+            return self._web3_override
+        if self._web3_instance is None:
+            self._web3_instance = make_web3(self.funder_config)
+        return self._web3_instance
         verify_adapter_abi()
         self._verify_chain()
 
