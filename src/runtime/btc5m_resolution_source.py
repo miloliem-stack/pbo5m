@@ -10,6 +10,14 @@ from .btc5m_pusd_redeem_adapter import POLY_CTF_CONTRACT_ADDRESS, condition_id_t
 from .polymarket_funder_setup import PolymarketFunderConfig, checksum, make_web3
 
 
+def _web3_importable() -> bool:
+    try:
+        import web3  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 CTF_RESOLUTION_ABI = [
     {
         "inputs": [{"name": "conditionId", "type": "bytes32"}],
@@ -102,13 +110,14 @@ class GammaCtfResolutionSource:
             market = self.gamma_fetcher(lot)
         except Exception as exc:
             return ResolutionResult(False, error=f"gamma_fetch_failed:{exc}").as_dict()
-        gamma = infer_gamma_resolution(market or {}, allow_weak_mapping=self.allow_weak_gamma_mapping)
+        gamma = infer_gamma_resolution(market or {}, allow_weak_gamma_mapping=self.allow_weak_gamma_mapping)
         if not gamma.get("resolved"):
             return ResolutionResult(False, gamma_status=gamma.get("status"), error=gamma.get("error") or "gamma_unresolved_or_ambiguous", diagnostics=gamma).as_dict()
-        # Skip on-chain confirmation if POLYGON_RPC is not configured — fall back to
-        # Gamma-only resolution.  Operators can re-enable by setting POLYGON_RPC and
-        # BTC5M_RESOLUTION_REQUIRE_ONCHAIN_CONFIRMATION=true.
-        if self.require_onchain_confirmation and not self.funder_config.polygon_rpc:
+        # Skip on-chain confirmation if POLYGON_RPC is not configured or the web3
+        # package is not installed — fall back to Gamma-only resolution.
+        # Operators can get full on-chain confirmation by installing web3 and setting POLYGON_RPC.
+        _web3_available = bool(self.funder_config.polygon_rpc) and _web3_importable()
+        if self.require_onchain_confirmation and not _web3_available:
             winning_side = gamma.get("winning_side")
             if winning_side not in {"YES", "NO"}:
                 return ResolutionResult(False, gamma_status=gamma.get("status"), error="gamma_winning_side_ambiguous", diagnostics=gamma).as_dict()
