@@ -65,6 +65,7 @@ from src.runtime.btc5m_canary_execution import (
     ExecutionJournal,
     PyClobClientAdapter,
 )
+import json as _json
 from src.runtime.btc5m_lifecycle_supervisor import (
     SupervisorConfig,
     run_supervisor,
@@ -80,6 +81,33 @@ def _env_bool(key: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _make_event_fn(verbose: bool):
+    """Return an event callback that prints JSONL lines to stdout.
+
+    In verbose mode every supervisor event is printed.  In normal mode only
+    events with real content (trades, fills, resolutions, redemptions, errors,
+    heartbeats) are printed so the console stays readable.
+    """
+    ALWAYS_PRINT = {
+        "trading_tick",
+        "reconciliation_tick",
+        "resolution_tick",
+        "redemption_tick",
+        "supervisor_heartbeat",
+        "reconciliation_tick_error",
+        "resolution_tick_error",
+        "redemption_tick_error",
+        "trading_tick_error",
+    }
+
+    def _fn(event: dict) -> None:
+        name = event.get("event", "")
+        if verbose or name in ALWAYS_PRINT:
+            print(_json.dumps(event, default=str), flush=True)
+
+    return _fn
 
 
 def brownian_execution_config_from_env() -> ExecutionConfig:
@@ -269,6 +297,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         redeem_adapter=redeem_adapter,
         get_order_status_fn=get_order_status_fn,
         max_runtime_sec=float(args.max_runtime_sec),
+        event_fn=_make_event_fn(verbose=getattr(args, "verbose", False)),
     )
 
     trace_stage_done(
@@ -300,6 +329,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=float(os.environ.get("BTC5M_MAX_RUNTIME_SEC", "3600")),
         help="Hard deadline for the supervisor loop in seconds (default: 3600).",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=_env_bool("BTC5M_SUPERVISOR_VERBOSE"),
+        help="Print every internal supervisor event, not just key decisions.",
     )
     return parser
 

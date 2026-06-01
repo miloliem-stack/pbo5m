@@ -166,13 +166,13 @@ def compute_conservative_stake(
     rounded_to_min_order = False
     if stake < config.min_order_notional:
         if config.skip_below_min_order and bankroll < config.small_wallet_threshold:
-            return _try_canary_override(full, depth_cap, bankroll, config)
+            return _try_canary_override(full, depth_cap, bankroll, config, calculated_stake=stake)
         if config.min_order_notional <= active_max_fraction * bankroll:
             stake = config.min_order_notional
             stake_fraction = stake / bankroll if bankroll else 0.0
             rounded_to_min_order = True
         else:
-            return _try_canary_override(full, depth_cap, bankroll, config)
+            return _try_canary_override(full, depth_cap, bankroll, config, calculated_stake=stake)
     capacity_bound = math.isfinite(depth_cap) and stake > depth_cap
     if capacity_bound:
         stake = depth_cap
@@ -387,8 +387,12 @@ def _stake_result(stake: float, fraction: float, full: float, depth_cap: float, 
     }
 
 
-def _try_canary_override(full_kelly: float, depth_cap: float, bankroll: float, config: "BrownianConservativeConfig") -> dict[str, Any]:
-    """Attempt the canary_force_min_notional_override when conservative sizing falls below min_order_notional."""
+def _try_canary_override(full_kelly: float, depth_cap: float, bankroll: float, config: "BrownianConservativeConfig", *, calculated_stake: float = 0.0) -> dict[str, Any]:
+    """Attempt the canary_force_min_notional_override when conservative sizing falls below min_order_notional.
+
+    The final stake is ``max(canary_force_min_notional_usd, calculated_stake)`` so that if the
+    Kelly-sized stake is non-trivial it is preserved, while a hard floor is enforced otherwise.
+    """
 
     def _reject_override(reason: str) -> dict[str, Any]:
         return _stake_result(0.0, 0.0, full_kelly, depth_cap, False, "below_min_order_notional", bankroll,
@@ -413,9 +417,12 @@ def _try_canary_override(full_kelly: float, depth_cap: float, bankroll: float, c
         return _reject_override("forced_notional_exceeds_depth_cap")
     if forced < config.min_order_notional:
         return _reject_override("forced_notional_below_venue_floor")
-    forced_fraction = forced / bankroll if bankroll else 0.0
+    # Final stake: take the larger of the floor and any non-zero Kelly stake that was computed
+    # before rejection.  This means the override is truly a minimum, not a fixed amount.
+    final_stake = max(forced, calculated_stake) if calculated_stake > 0 else forced
+    final_fraction = final_stake / bankroll if bankroll else 0.0
     return {
-        **_stake_result(forced, forced_fraction, full_kelly, depth_cap, False, None, bankroll),
+        **_stake_result(final_stake, final_fraction, full_kelly, depth_cap, False, None, bankroll),
         "rounded_to_min_order": True,
         "canary_force_min_notional_applied": True,
         "canary_force_min_notional_reason": "tiny_wallet_live_canary_plumbing_test",

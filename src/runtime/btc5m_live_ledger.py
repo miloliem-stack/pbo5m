@@ -391,7 +391,9 @@ class LiveLedger:
                       'order_rejected', 'order_cancelled',
                       'execution_rejected_by_venue', 'execution_error_after_submit',
                       'execution_skipped', 'live_one_shot_exit', 'not_live_mode',
-                      'order_unknown_after_submit'
+                      'order_unknown_after_submit',
+                      'matched', 'filled', 'partial', 'partially_filled',
+                      'rejected', 'cancelled', 'canceled', 'failed'
                   )
                 """
             ).fetchall()
@@ -410,7 +412,9 @@ class LiveLedger:
                       'order_rejected', 'order_cancelled',
                       'execution_rejected_by_venue', 'execution_error_after_submit',
                       'execution_skipped', 'live_one_shot_exit', 'not_live_mode',
-                      'order_unknown_after_submit'
+                      'order_unknown_after_submit',
+                      'matched', 'filled', 'partial', 'partially_filled',
+                      'rejected', 'cancelled', 'canceled', 'failed'
                   )
                 """
             ).fetchone()[0]

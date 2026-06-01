@@ -165,6 +165,34 @@ class TestLiveLedgerSupervisorQueries:
             )
         assert ledger.count_live_open_orders() == 0
 
+    def test_count_live_open_orders_excludes_raw_clob_fill_statuses(self, tmp_path: Path):
+        """Orders with raw CLOB terminal statuses ('matched', 'filled') must not
+        count as live open orders — they are fully-terminal fills stored by
+        record_order_submission before normalization to 'order_filled'."""
+        ledger = _ledger(tmp_path)
+        _submit_order(ledger, order_id="o1")
+        _submit_order(ledger, order_id="o2")
+        with ledger.connect() as conn:
+            conn.execute("UPDATE live_orders SET terminal_status='matched' WHERE order_id='o1'")
+            conn.execute("UPDATE live_orders SET terminal_status='filled' WHERE order_id='o2'")
+        assert ledger.count_live_open_orders() == 0
+
+    def test_open_orders_for_reconciliation_excludes_raw_clob_fill_statuses(self, tmp_path: Path):
+        """Orders stored with raw CLOB fill status should not be re-polled."""
+        ledger = _ledger(tmp_path)
+        _submit_order(ledger, order_id="o1")
+        _submit_order(ledger, order_id="o2")
+        _submit_order(ledger, order_id="o3")
+        with ledger.connect() as conn:
+            conn.execute("UPDATE live_orders SET terminal_status='matched' WHERE order_id='o1'")
+            conn.execute("UPDATE live_orders SET terminal_status='filled' WHERE order_id='o2'")
+            # o3 stays non-terminal → should appear
+        rows = ledger.open_orders_for_reconciliation()
+        order_ids = {r["order_id"] for r in rows}
+        assert "o1" not in order_ids
+        assert "o2" not in order_ids
+        assert "o3" in order_ids
+
     def test_count_live_open_orders_excludes_no_order_id(self, tmp_path: Path):
         """Intent-only rows (no order_id) are not counted as open CLOB orders."""
         ledger = _ledger(tmp_path)

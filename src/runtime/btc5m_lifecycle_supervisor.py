@@ -730,6 +730,7 @@ def run_supervisor(
     get_order_status_fn: Optional[Callable[[str], dict[str, Any]]] = None,
     max_runtime_sec: float = 3600.0,
     sleep_fn: Callable[[float], None] = time.sleep,
+    event_fn: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
     """Run the four-worker supervisor loop until ``max_runtime_sec`` expires or
     an unhandled exception propagates.
@@ -829,8 +830,18 @@ def run_supervisor(
                     filled=rec.get("filled"),
                     error_count=len(rec.get("errors") or []),
                 )
+                if event_fn is not None and (rec.get("polled") or rec.get("errors")):
+                    event_fn({
+                        "event": "reconciliation_tick",
+                        "polled": rec.get("polled"),
+                        "filled": rec.get("filled"),
+                        "errors": rec.get("errors"),
+                        "elapsed_sec": round(time.monotonic() - rec_start, 3),
+                    })
             except Exception as exc:
                 trace_event("reconciliation_tick_error", error=str(exc))
+                if event_fn is not None:
+                    event_fn({"event": "reconciliation_tick_error", "error": str(exc)})
 
         # ── Resolution worker ─────────────────────────────────────────────────
         if (
@@ -853,8 +864,18 @@ def run_supervisor(
                     newly_resolved=res.get("newly_resolved"),
                     error_count=len(res.get("errors") or []),
                 )
+                if event_fn is not None and (res.get("checked") or res.get("errors")):
+                    event_fn({
+                        "event": "resolution_tick",
+                        "checked": res.get("checked"),
+                        "newly_resolved": res.get("newly_resolved"),
+                        "errors": res.get("errors"),
+                        "elapsed_sec": round(time.monotonic() - res_start, 3),
+                    })
             except Exception as exc:
                 trace_event("resolution_tick_error", error=str(exc))
+                if event_fn is not None:
+                    event_fn({"event": "resolution_tick_error", "error": str(exc)})
 
         # ── Redemption worker ─────────────────────────────────────────────────
         if (
@@ -878,8 +899,18 @@ def run_supervisor(
                     redeemed=red.get("redeemed"),
                     error_count=len(red.get("errors") or []),
                 )
+                if event_fn is not None and (red.get("attempted") or red.get("errors")):
+                    event_fn({
+                        "event": "redemption_tick",
+                        "attempted": red.get("attempted"),
+                        "redeemed": red.get("redeemed"),
+                        "errors": red.get("errors"),
+                        "elapsed_sec": round(time.monotonic() - red_start, 3),
+                    })
             except Exception as exc:
                 trace_event("redemption_tick_error", error=str(exc))
+                if event_fn is not None:
+                    event_fn({"event": "redemption_tick_error", "error": str(exc)})
 
         # ── Trading worker ────────────────────────────────────────────────────
         if (
@@ -907,14 +938,21 @@ def run_supervisor(
                     block_reasons=trade.get("block_reasons"),
                     market_id=trade.get("market_id"),
                 )
+                if event_fn is not None:
+                    _emit_trading_event(event_fn, trade, elapsed_sec=round(time.monotonic() - trade_start, 3))
             except Exception as exc:
                 trace_event("trading_tick_error", error=str(exc))
+                if event_fn is not None:
+                    event_fn({"event": "trading_tick_error", "error": str(exc)})
                 last_trading_ts = time.monotonic()
 
         # ── Periodic status summary ───────────────────────────────────────────
         if iterations % 10 == 0:
             try:
-                trace_event("supervisor_status", **supervisor_status_summary(ledger))
+                summary = supervisor_status_summary(ledger)
+                trace_event("supervisor_status", **summary)
+                if event_fn is not None:
+                    event_fn({"event": "supervisor_heartbeat", **summary})
             except Exception:
                 pass
 
@@ -951,6 +989,58 @@ def run_supervisor(
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+def _emit_trading_event(
+    event_fn: Callable[[dict[str, Any]], None],
+    trade: dict[str, Any],
+    *,
+    elapsed_sec: float,
+) -> None:
+    """Emit a concise trading-tick event via *event_fn*.
+
+    Includes decision debug fields (side, notional, stake, reject reason, sizing
+    policy) when available so the operator can see why a trade was or wasn't made.
+    """
+    debug = trade.get("decision_debug") or {}
+    event: dict[str, Any] = {
+        "event": "trading_tick",
+        "status": trade.get("status"),
+        "market_id": trade.get("market_id"),
+        "market_slug": trade.get("market_slug"),
+        "elapsed_sec": elapsed_sec,
+    }
+    # Gate-blocked trades
+    if trade.get("block_reasons"):
+        event["block_reasons"] = trade["block_reasons"]
+    # No-trade decisions
+    if trade.get("reason") or debug.get("reject_reason"):
+        event["reject_reason"] = trade.get("reason") or debug.get("reject_reason")
+    # Trade accepted
+    if trade.get("side") or debug.get("chosen_side"):
+        event["side"] = trade.get("side") or debug.get("chosen_side")
+    if trade.get("notional_usd") is not None or debug.get("stake_notional") is not None:
+        event["notional_usd"] = trade.get("notional_usd") if trade.get("notional_usd") is not None else debug.get("stake_notional")
+    if debug.get("stake_fraction") is not None:
+        event["stake_fraction"] = round(float(debug["stake_fraction"]), 6)
+    if debug.get("sizing_policy"):
+        event["sizing_policy"] = debug["sizing_policy"]
+    if debug.get("canary_force_min_notional_applied"):
+        event["canary_force_min_notional_applied"] = True
+    if debug.get("expected_log_growth") is not None:
+        event["expected_log_growth"] = round(float(debug["expected_log_growth"]), 6)
+    if debug.get("chosen_edge") is not None:
+        event["chosen_edge"] = round(float(debug["chosen_edge"]), 4)
+    if debug.get("final_decision"):
+        event["final_decision"] = debug["final_decision"]
+    if debug.get("bankroll_before") is not None:
+        event["bankroll_usd"] = round(float(debug["bankroll_before"]), 4)
+    # Execution outcome
+    exec_result = trade.get("execution_result")
+    if isinstance(exec_result, dict):
+        event["execution_event_type"] = exec_result.get("event_type")
+        event["order_id"] = exec_result.get("order_id")
+    event_fn(event)
+
 
 def _opt_float(value: Any) -> Optional[float]:
     if value in (None, ""):
