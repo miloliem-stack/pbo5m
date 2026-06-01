@@ -149,6 +149,7 @@ def _build_resolution_source() -> Optional[Any]:
         return build_resolution_source(os.environ)
     except Exception as exc:
         trace_event("resolution_source_init_skipped", reason=str(exc))
+        print(json.dumps({"event": "resolution_source_init_skipped", "reason": str(exc)}))
         return None
 
 
@@ -162,6 +163,7 @@ def _build_redeem_adapter() -> Optional[Any]:
         return PusdCtfRedeemAdapter(funder_cfg)
     except Exception as exc:
         trace_event("redeem_adapter_init_skipped", reason=str(exc))
+        print(json.dumps({"event": "redeem_adapter_init_skipped", "reason": str(exc)}))
         return None
 
 

@@ -798,6 +798,18 @@ def run_supervisor(
         redemption_worker_enabled=redeem_adapter is not None,
         trading_worker_enabled=live_input_builder is not None,
     )
+    if event_fn is not None:
+        event_fn({
+            "event": "supervisor_workers_ready",
+            "trading": live_input_builder is not None,
+            "reconciliation": get_order_status_fn is not None,
+            "resolution": resolution_source is not None,
+            "redemption": redeem_adapter is not None,
+            "max_runtime_sec": max_runtime_sec,
+            "trading_tick_interval_sec": supervisor_config.trading_tick_interval_sec,
+            "resolution_tick_interval_sec": supervisor_config.resolution_tick_interval_sec,
+            "redemption_tick_interval_sec": supervisor_config.redemption_tick_interval_sec,
+        })
 
     while time.monotonic() <= deadline:
         now = time.monotonic()
@@ -1009,6 +1021,11 @@ def _emit_trading_event(
         "market_slug": trade.get("market_slug"),
         "elapsed_sec": elapsed_sec,
     }
+    # Live-input missing — surface reason so operator can diagnose
+    if trade.get("missing_input_reason"):
+        event["missing_input_reason"] = trade["missing_input_reason"]
+    if trade.get("missing_components"):
+        event["missing_components"] = trade["missing_components"]
     # Gate-blocked trades
     if trade.get("block_reasons"):
         event["block_reasons"] = trade["block_reasons"]
