@@ -110,7 +110,7 @@ class GammaCtfResolutionSource:
             market = self.gamma_fetcher(lot)
         except Exception as exc:
             return ResolutionResult(False, error=f"gamma_fetch_failed:{exc}").as_dict()
-        gamma = infer_gamma_resolution(market or {}, allow_weak_gamma_mapping=self.allow_weak_gamma_mapping)
+        gamma = infer_gamma_resolution(market or {}, allow_weak_mapping=self.allow_weak_gamma_mapping)
         if not gamma.get("resolved"):
             return ResolutionResult(False, gamma_status=gamma.get("status"), error=gamma.get("error") or "gamma_unresolved_or_ambiguous", diagnostics=gamma).as_dict()
         # Skip on-chain confirmation if POLYGON_RPC is not configured or the web3
