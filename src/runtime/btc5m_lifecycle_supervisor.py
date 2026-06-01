@@ -627,11 +627,17 @@ def trading_worker_tick(
     )
 
     if not built.get("ok"):
-        return {
+        meta = (built.get("input") or {}).get("live_input_meta") or {}
+        ret: dict[str, Any] = {
             "status": "live_input_missing",
             "missing_input_reason": built.get("missing_input_reason"),
             "missing_components": built.get("missing_components") or [],
         }
+        if meta.get("brownian_error"):
+            ret["brownian_error"] = meta["brownian_error"]
+        if meta.get("hmm_error"):
+            ret["hmm_error"] = meta["hmm_error"]
+        return ret
 
     live_input: dict[str, Any] = built["input"]
 
@@ -1026,6 +1032,16 @@ def _emit_trading_event(
         event["missing_input_reason"] = trade["missing_input_reason"]
     if trade.get("missing_components"):
         event["missing_components"] = trade["missing_components"]
+    if trade.get("brownian_error"):
+        event["brownian_error"] = trade["brownian_error"]
+    if trade.get("hmm_error"):
+        event["hmm_error"] = trade["hmm_error"]
+    # Dig into live_input_meta for sub-reasons (brownian/hmm errors)
+    meta = (trade.get("input") or {}).get("live_input_meta") or {}
+    if meta.get("brownian_error") and not trade.get("brownian_error"):
+        event["brownian_error"] = meta["brownian_error"]
+    if meta.get("hmm_error") and not trade.get("hmm_error"):
+        event["hmm_error"] = meta["hmm_error"]
     # Gate-blocked trades
     if trade.get("block_reasons"):
         event["block_reasons"] = trade["block_reasons"]
