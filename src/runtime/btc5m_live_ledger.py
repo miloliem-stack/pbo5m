@@ -373,6 +373,97 @@ class LiveLedger:
                 (condition_id, total, redeemed_pusd_amount, tx_hash, _json(receipt), now),
             )
 
+    # ──────────────────────────────────────────────────────────────────
+    # Supervisor query helpers
+    # ──────────────────────────────────────────────────────────────────
+
+    def open_orders_for_reconciliation(self) -> list[dict[str, Any]]:
+        """Return live_orders rows that have an order_id but have not yet reached
+        a fully-terminal fill/cancel/reject state.  These need to be polled by
+        the reconciliation worker."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM live_orders
+                WHERE order_id IS NOT NULL AND order_id != ''
+                  AND terminal_status NOT IN (
+                      'order_filled', 'order_partially_filled',
+                      'order_rejected', 'order_cancelled',
+                      'execution_rejected_by_venue', 'execution_error_after_submit',
+                      'execution_skipped', 'live_one_shot_exit', 'not_live_mode',
+                      'order_unknown_after_submit'
+                  )
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_live_open_orders(self) -> int:
+        """Count orders that have been submitted to the CLOB and are still open
+        (not in any terminal state).  Used by the MAX_LIVE_OPEN_ORDERS safety gate."""
+        with self.connect() as conn:
+            value = conn.execute(
+                """
+                SELECT COUNT(*) FROM live_orders
+                WHERE order_id IS NOT NULL AND order_id != ''
+                  AND terminal_status NOT IN (
+                      'order_filled', 'order_partially_filled',
+                      'order_rejected', 'order_cancelled',
+                      'execution_rejected_by_venue', 'execution_error_after_submit',
+                      'execution_skipped', 'live_one_shot_exit', 'not_live_mode',
+                      'order_unknown_after_submit'
+                  )
+                """
+            ).fetchone()[0]
+        return int(value)
+
+    def count_unknown_orders(self) -> int:
+        """Count orders whose final recorded status is 'order_unknown_after_submit'.
+        A non-zero value triggers the BLOCK_ON_UNKNOWN_ORDER safety gate."""
+        with self.connect() as conn:
+            value = conn.execute(
+                "SELECT COUNT(*) FROM live_orders WHERE terminal_status = 'order_unknown_after_submit'"
+            ).fetchone()[0]
+        return int(value)
+
+    def count_unresolved_markets(self) -> int:
+        """Count distinct markets (by condition_id) where we still hold open or
+        resolved-win outcome lots.  Used by the MAX_UNRESOLVED_MARKETS safety gate."""
+        with self.connect() as conn:
+            value = conn.execute(
+                "SELECT COUNT(DISTINCT condition_id) FROM outcome_lots WHERE status IN ('open', 'resolved_win')"
+            ).fetchone()[0]
+        return int(value)
+
+    def total_unredeemed_notional_estimate(self) -> float:
+        """Estimate the USD value of all open/resolved-win lots we still hold
+        (remaining_qty * avg_cost).  Used by the MAX_TOTAL_UNREDEEMED_NOTIONAL_USD
+        safety gate."""
+        with self.connect() as conn:
+            value = conn.execute(
+                """
+                SELECT COALESCE(SUM(remaining_qty * avg_cost), 0.0)
+                FROM outcome_lots
+                WHERE status IN ('open', 'resolved_win')
+                """
+            ).fetchone()[0]
+        return float(value or 0.0)
+
+    def supervisor_summary(self) -> dict[str, Any]:
+        """Return a comprehensive snapshot of ledger state for operator traces
+        and supervisor status reporting."""
+        return {
+            "live_open_orders": self.count_live_open_orders(),
+            "unknown_orders": self.count_unknown_orders(),
+            "unresolved_markets": self.count_unresolved_markets(),
+            "unredeemed_notional_estimate": self.total_unredeemed_notional_estimate(),
+            "open_reserved_pusd": self.open_reserved_pusd(),
+            "unredeemed_winning_estimate": self.unredeemed_winning_estimate(),
+            "orders_total": self.count_rows("live_orders"),
+            "lots_total": self.count_rows("outcome_lots"),
+            "redemptions_total": self.count_rows("redemption_attempts"),
+            "redeemed_total": self.count_rows("redeemed_lots"),
+        }
+
     def open_reserved_pusd(self) -> float:
         with self.connect() as conn:
             value = conn.execute(
