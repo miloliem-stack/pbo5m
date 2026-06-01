@@ -154,6 +154,7 @@ class BTC5MCanaryLiveInputBuilder:
                 "market_source": routed.get("detection_source") if isinstance(routed, dict) else None,
                 "missing_components": missing,
                 "brownian_error": brownian.get("missing_input_reason"),
+                "brownian_convention_found": brownian.get("convention_found"),
                 "hmm_error": hmm.get("missing_input_reason"),
                 "brownian_source": brownian.get("source"),
                 "hmm_source": hmm.get("source"),
@@ -197,7 +198,8 @@ class BTC5MCanaryLiveInputBuilder:
                 return {"ok": False, "missing_input_reason": "brownian_model_id_mismatch"}
             convention = state.get("probability_convention") or state.get("probability_replay_convention")
             if convention not in REQUIRED_BROWNIAN_CONVENTIONS:
-                return {"ok": False, "missing_input_reason": "brownian_convention_mismatch"}
+                return {"ok": False, "missing_input_reason": "brownian_convention_mismatch",
+                        "convention_found": convention}
             stale_reason = self._stale_reason(state)
             if stale_reason:
                 return {"ok": False, "missing_input_reason": stale_reason}

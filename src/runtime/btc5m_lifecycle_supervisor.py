@@ -60,8 +60,8 @@ class SupervisorConfig:
     # Tick intervals
     trading_tick_interval_sec: float = 5.0
     reconciliation_tick_interval_sec: float = 3.0
-    resolution_tick_interval_sec: float = 30.0
-    redemption_tick_interval_sec: float = 60.0
+    resolution_tick_interval_sec: float = 10.0
+    redemption_tick_interval_sec: float = 15.0
     loop_sleep_sec: float = 1.0
 
     @classmethod
@@ -635,6 +635,8 @@ def trading_worker_tick(
         }
         if meta.get("brownian_error"):
             ret["brownian_error"] = meta["brownian_error"]
+        if meta.get("brownian_convention_found"):
+            ret["brownian_convention_found"] = meta["brownian_convention_found"]
         if meta.get("hmm_error"):
             ret["hmm_error"] = meta["hmm_error"]
         return ret
@@ -1034,6 +1036,8 @@ def _emit_trading_event(
         event["missing_components"] = trade["missing_components"]
     if trade.get("brownian_error"):
         event["brownian_error"] = trade["brownian_error"]
+    if trade.get("brownian_convention_found"):
+        event["brownian_convention_found"] = trade["brownian_convention_found"]
     if trade.get("hmm_error"):
         event["hmm_error"] = trade["hmm_error"]
     # Dig into live_input_meta for sub-reasons (brownian/hmm errors)
