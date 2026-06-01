@@ -373,8 +373,12 @@ def _brownian_risk_state_from_env() -> dict[str, Any]:
         "open_positions": 0,
         "daily_loss_usd": 0.0,
         "bankroll": bankroll or 0.0,
-        "session_start_bankroll": session_start or bankroll or 0.0,
-        "day_start_bankroll": day_start or bankroll or 0.0,
+        # session_start_bankroll and day_start_bankroll default to None when
+        # BTC5M_BROWNIAN_BANKROLL_USD is not set so that the live capital state
+        # (set later by _apply_capital_risk_state) becomes the authoritative
+        # baseline and the stop-loss guards are not triggered by a stale static value.
+        "session_start_bankroll": session_start or 0.0,
+        "day_start_bankroll": day_start or 0.0,
         "daily_pnl": daily_pnl,
         "already_traded_market": already,
     }

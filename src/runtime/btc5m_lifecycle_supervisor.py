@@ -527,6 +527,12 @@ def _apply_capital_risk_state(
     existing = dict(live_input.get("risk_state") or {})
     if available < min_order_notional and unredeemed_winners > 0:
         existing["capital_skip_hint"] = "insufficient_pusd_unredeemed_winners_pending"
+    # Use live balance as the stop-loss baseline when no explicit session/day
+    # start bankroll was provided via env vars (i.e. still at the 0.0 default).
+    if not existing.get("session_start_bankroll"):
+        existing["session_start_bankroll"] = available
+    if not existing.get("day_start_bankroll"):
+        existing["day_start_bankroll"] = available
     existing.update(
         {
             "bankroll": available,
