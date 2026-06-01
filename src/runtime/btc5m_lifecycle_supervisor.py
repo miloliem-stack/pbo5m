@@ -345,14 +345,17 @@ def resolution_worker_tick(
         try:
             result = resolution_source.resolve(lot)
             checked += 1
-            if result.resolved:
+            if result.get("resolved") if isinstance(result, dict) else result.resolved:
+                winning_side = result.get("winning_side") if isinstance(result, dict) else result.winning_side
+                payout_vector = result.get("payout_vector") if isinstance(result, dict) else getattr(result, "payout_vector", None)
+                source = result.get("source") if isinstance(result, dict) else getattr(result, "source", None)
                 ledger.upsert_resolution(
                     condition_id=condition_id,
                     market_id=lot.get("market_id"),
                     resolved=True,
-                    winning_side=result.winning_side or "UNKNOWN",
-                    source=getattr(result, "source", None) or "gamma_ctf",
-                    payout_vector=getattr(result, "payout_vector", None),
+                    winning_side=winning_side or "UNKNOWN",
+                    source=source or "gamma_ctf",
+                    payout_vector=payout_vector,
                 )
                 ledger.terminalize_resolved_lots()
                 newly_resolved += 1
