@@ -105,7 +105,7 @@ class BrownianConservativeConfig:
             canary_force_max_wallet_usd=float(source.get("BTC5M_BROWNIAN_CANARY_FORCE_MAX_WALLET_USD", "50.0")),
             canary_force_max_stake_fraction=float(source.get("BTC5M_BROWNIAN_CANARY_FORCE_MAX_STAKE_FRACTION", "0.10")),
             canary_force_live_only=_env_bool(source.get("BTC5M_BROWNIAN_CANARY_FORCE_LIVE_ONLY", "true")),
-            canary_force_require_one_shot=_env_bool(source.get("BTC5M_BROWNIAN_CANARY_FORCE_REQUIRE_ONE_SHOT", "true")),
+            canary_force_require_one_shot=_env_bool(source.get("BTC5M_BROWNIAN_CANARY_FORCE_REQUIRE_ONE_SHOT", "false")),
         )
 
     def config_hash(self) -> str:
