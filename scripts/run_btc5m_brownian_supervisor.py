@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -81,6 +82,17 @@ def _env_bool(key: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_runtime_sec(value: Optional[str], *, default: float = 300.0) -> float:
+    """Parse a runtime seconds string, returning *default* if unset or invalid."""
+    if not value or not value.strip():
+        return default
+    try:
+        parsed = float(value.strip())
+        return parsed if parsed > 0 else default
+    except ValueError:
+        return default
 
 
 def _make_event_fn(verbose: bool):
@@ -288,6 +300,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         pass
 
     # ── Run supervisor ────────────────────────────────────────────────────────
+    runtime_sec = math.inf if getattr(args, "live", False) else float(args.max_runtime_sec)
     result = run_supervisor(
         ledger=ledger,
         supervisor_config=supervisor_cfg,
@@ -298,7 +311,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         resolution_source=resolution_source,
         redeem_adapter=redeem_adapter,
         get_order_status_fn=get_order_status_fn,
-        max_runtime_sec=float(args.max_runtime_sec),
+        max_runtime_sec=runtime_sec,
         event_fn=_make_event_fn(verbose=getattr(args, "verbose", False)),
     )
 
@@ -327,10 +340,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build live inputs autonomously (required for trading/resolution/redemption workers).",
     )
     parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Run indefinitely, ignoring BTC5M_MAX_RUNTIME_SEC and --max-runtime-sec.",
+    )
+    parser.add_argument(
         "--max-runtime-sec",
         type=float,
-        default=float(os.environ.get("BTC5M_MAX_RUNTIME_SEC", "36000")),
-        help="Hard deadline for the supervisor loop in seconds (default: 36000).",
+        default=_parse_runtime_sec(os.environ.get("BTC5M_MAX_RUNTIME_SEC"), default=300.0),
+        help="Hard deadline for the supervisor loop in seconds (default: 300). Ignored when --live is set.",
     )
     parser.add_argument(
         "--verbose",
