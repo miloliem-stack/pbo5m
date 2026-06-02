@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,22 @@ from .btc5m_canary_policy import POLICY_ID as HMM_CANARY_POLICY_ID
 
 
 HMM_CANARY_STRATEGY_IDS = frozenset({HMM_CANARY_POLICY_ID, "state3_ask_brownian_age60_v0"})
+
+
+def brownian_idempotency_key(**parts: Any) -> str:
+    """Idempotency key for the Brownian path.
+
+    Extends the canonical key with ``market_end_ts`` so that consecutive
+    5-minute candles that share the same ``market_start_ts`` (common when
+    Polymarket uses the event-creation timestamp rather than the candle-open
+    timestamp as ``start_time``) still receive distinct keys.
+    """
+    payload = "|".join(
+        str(parts.get(k) or "")
+        for k in ["policy_id", "condition_id", "market_id", "token_id", "side",
+                  "market_start_ts", "market_end_ts", "wallet_address"]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -165,13 +182,14 @@ def brownian_execution_request_to_order_intent(request: dict[str, Any], executor
     if side not in {"YES", "NO"}:
         return None, "invalid_side"
     wallet = executor.wallet_address()
-    key = idempotency_key(
+    key = brownian_idempotency_key(
         policy_id=BROWNIAN_STRATEGY_ID,
         condition_id=request.get("condition_id"),
         market_id=request.get("market_id"),
         token_id=str(token_id),
         side=side,
         market_start_ts=request.get("market_start_ts"),
+        market_end_ts=request.get("market_end_ts"),
         wallet_address=wallet,
     )
     return (
