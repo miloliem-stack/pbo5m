@@ -22,7 +22,7 @@ Key environment variables
 -------------------------
   BTC5M_EXECUTION_MODE                    observe | live (default: observe)
   BTC5M_BROWNIAN_LIVE_ENABLED             true | false (default: false)
-  BTC5M_MAX_RUNTIME_SEC                   supervisor deadline (default: 3600)
+  BTC5M_MAX_RUNTIME_SEC                   supervisor deadline (default: 36000)
   BTC5M_SUPERVISOR_TRADING_TICK_SEC       trading tick interval (default: 5)
   BTC5M_SUPERVISOR_RECONCILIATION_TICK_SEC
   BTC5M_SUPERVISOR_RESOLUTION_TICK_SEC
@@ -329,8 +329,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-runtime-sec",
         type=float,
-        default=float(os.environ.get("BTC5M_MAX_RUNTIME_SEC", "3600")),
-        help="Hard deadline for the supervisor loop in seconds (default: 3600).",
+        default=float(os.environ.get("BTC5M_MAX_RUNTIME_SEC", "36000")),
+        help="Hard deadline for the supervisor loop in seconds (default: 36000).",
     )
     parser.add_argument(
         "--verbose",
