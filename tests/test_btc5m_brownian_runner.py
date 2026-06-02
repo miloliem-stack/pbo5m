@@ -141,12 +141,12 @@ def test_live_enabled_calls_execution_once_with_normalized_request(tmp_path: Pat
     assert "order_intent" not in request
 
 
-def test_execution_rejected_status_is_propagated(tmp_path: Path):
+def test_execution_skipped_status_is_propagated(tmp_path: Path):
     def execution(_):
         return {"event_type": "execution_skipped", "skip_reason": "duplicate_journal_entry"}
 
     result = run(tmp_path, config=cfg(tmp_path, paper_only=False, live_enabled=True), execution_callback=execution)
-    assert result.status == "execution_rejected"
+    assert result.status == "execution_skipped"
     assert result.reason == "duplicate_journal_entry"
 
 
