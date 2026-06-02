@@ -127,7 +127,7 @@ def run_brownian_conservative_cycle(
         return _result("execution_error", decision=decision, validation=validation, execution_result={"error": str(exc)}, reason=str(exc))
     status = "submitted_live"
     execution_status = str(execution_result.get("event_type") or execution_result.get("status") or "").lower()
-    if execution_status == "execution_skipped":
+    if execution_status in {"execution_skipped", "live_one_shot_exit"}:
         status = "execution_skipped"
     elif execution_status in {
         "execution_rejected",
