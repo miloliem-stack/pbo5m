@@ -414,25 +414,27 @@ def attach_validation_context(fills: pd.DataFrame, validation: pd.DataFrame) -> 
     validation_sorted = validation.sort_values("val_ts").reset_index(drop=True)
     fills_sorted = fills.sort_values("fill_ts").reset_index(drop=True)
 
-    # Prefix all validation columns to avoid collision
+    # Prefix ALL validation columns (including key columns) with "val_" to
+    # prevent merge_asof from silently renaming fills columns to _x/_y.
     val_rename = {
         c: f"val_{c}"
         for c in validation_sorted.columns
-        if c not in key_cols and c != "val_ts"
+        if c != "val_ts"  # val_ts was already set above
     }
     val_rename["val_ts"] = "val_ts"
     validation_sorted = validation_sorted.rename(columns=val_rename)
+
+    # Key columns as they appear in the renamed validation frame
+    val_key_cols = [f"val_{c}" for c in key_cols]
 
     merged_parts = []
     for keys, group_fills in fills_sorted.groupby(key_cols, dropna=False):
         if not isinstance(keys, tuple):
             keys = (keys,)
         mask = validation_sorted.copy()
-        for col, val in zip(key_cols, keys):
-            if col == "val_ts":
-                continue
-            vc = f"val_{col}" if f"val_{col}" in mask.columns else col
-            mask = mask[mask[vc] == val] if vc in mask.columns else mask
+        for vcol, val in zip(val_key_cols, keys):
+            if vcol in mask.columns:
+                mask = mask[mask[vcol] == val]
 
         if mask.empty:
             merged_parts.append(group_fills)
