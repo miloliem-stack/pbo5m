@@ -1,0 +1,63 @@
+{
+  "policies": {
+    "live_like": {
+      "min_market_age_seconds": 60,
+      "max_market_age_seconds": 240,
+      "min_ask": 0.30,
+      "max_ask": 0.47,
+      "min_edge": 0.02,
+      "require_best_buy_side": true
+    },
+    "live_like_ask_lt_0_40": {
+      "min_market_age_seconds": 60,
+      "max_market_age_seconds": 240,
+      "min_ask": 0.30,
+      "max_ask": 0.40,
+      "min_edge": 0.02,
+      "require_best_buy_side": true
+    },
+    "live_like_ask_lt_0_40_edge_ge_0_08": {
+      "min_market_age_seconds": 60,
+      "max_market_age_seconds": 240,
+      "min_ask": 0.30,
+      "max_ask": 0.40,
+      "min_edge": 0.08,
+      "require_best_buy_side": true
+    },
+    "live_like_ask_lt_0_40_edge_ge_0_12": {
+      "min_market_age_seconds": 60,
+      "max_market_age_seconds": 240,
+      "min_ask": 0.30,
+      "max_ask": 0.40,
+      "min_edge": 0.12,
+      "require_best_buy_side": true
+    },
+    "live_like_exclude_age_90_120": {
+      "min_market_age_seconds": 60,
+      "max_market_age_seconds": 240,
+      "exclude_age_intervals": [{"start": 90, "end": 120}],
+      "min_ask": 0.30,
+      "max_ask": 0.47,
+      "min_edge": 0.02,
+      "require_best_buy_side": true
+    },
+    "ask_lt_0_40_exclude_age_90_120": {
+      "min_market_age_seconds": 60,
+      "max_market_age_seconds": 240,
+      "exclude_age_intervals": [{"start": 90, "end": 120}],
+      "min_ask": 0.30,
+      "max_ask": 0.40,
+      "min_edge": 0.02,
+      "require_best_buy_side": true
+    },
+    "side_specific_ask_exploratory": {
+      "min_market_age_seconds": 60,
+      "max_market_age_seconds": 240,
+      "require_best_buy_side": true,
+      "side_rules": {
+        "YES": {"min_ask": 0.30, "max_ask": 0.40, "min_edge": 0.02},
+        "NO": {"min_ask": 0.35, "max_ask": 0.45, "min_edge": 0.02}
+      }
+    }
+  }
+}
